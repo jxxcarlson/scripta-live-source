@@ -1,0 +1,257 @@
+\documentclass[11pt, oneside]{article}
+\usepackage{float}
+\usepackage{graphicx}
+\usepackage{wrapfig}
+\graphicspath{ {image/} }
+
+
+
+%% Packages
+
+%% Standard packages
+\usepackage{geometry}
+\geometry{letterpaper}
+\usepackage{changepage}   % for the adjustwidth environment
+
+%% AMS
+\usepackage{amssymb}
+\usepackage{amsmath}
+
+\usepackage{amscd}
+
+\usepackage{fancyvrb} %% for inline verbatim
+
+
+%% Commands
+
+\newcommand{\code}[1]{{\tt #1}}
+\newcommand{\ellie}[1]{\href{#1}{Link to Ellie}}
+% \newcommand{\image}[3]{\includegraphics[width=3cm]{#1}}
+
+%% width=4truein,keepaspectratio]
+
+
+\newcommand{\imagecentercaptioned}[3]{
+   \medskip
+   \begin{figure}[htp]
+   \centering
+    \includegraphics[width=#2]{#1}
+    \vglue0pt
+    \caption{#3}
+    \end{figure}
+    \medskip
+}
+
+\newcommand{\imagecenter}[2]{
+   \medskip
+   \begin{figure}[htp]
+   \centering
+    \includegraphics[width=#2]{#1}
+    \vglue0pt
+    \end{figure}
+    \medskip
+}
+
+\newcommand{\imagefloat}[4]{
+    \begin{wrapfigure}{#4}{#2}
+    \includegraphics[width=#2]{#1}
+    \caption{#3}
+    \end{wrapfigure}
+}
+
+
+\newcommand{\imagefloatright}[3]{
+    \begin{wrapfigure}{R}{0.30\textwidth}
+    \includegraphics[width=0.30\textwidth]{#1}
+    \caption{#2}
+    \end{wrapfigure}
+}
+
+\newcommand{\hide}[1]{}
+
+
+\newcommand{\imagefloatleft}[3]{
+    \begin{wrapfigure}{L}{0.3-\textwidth}
+    \includegraphics[width=0.30\textwidth]{#1}
+    \caption{#2}
+    \end{wrapfigure}
+}
+% Font style
+\newcommand{\italic}[1]{{\sl #1}}
+\newcommand{\strong}[1]{{\bf #1}}
+\newcommand{\strike}[1]{\st{#1}}
+
+% Scripta
+\newcommand{\ilink}[2]{\href{{https://scripta.io/s/#1}}{#2}}
+
+% Color
+\newcommand{\red}[1]{\textcolor{red}{#1}}
+\newcommand{\blue}[1]{\textcolor{blue}{#1}}
+\newcommand{\violet}[1]{\textcolor{violet}{#1}}
+\newcommand{\highlight}[1]{\hl{#1}}
+\newcommand{\note}[2]{\textcolor{blue}{#1}{\hl{#1}}}
+
+% WTF?
+\newcommand{\remote}[1]{\textcolor{red}{#1}}
+\newcommand{\local}[1]{\textcolor{blue}{#1}}
+
+% Unclassified
+\newcommand{\subheading}[1]{{\bf #1}\par}
+\newcommand{\term}[1]{{\sl #1}}
+\newcommand{\termx}[1]{}
+\newcommand{\comment}[1]{}
+\newcommand{\innertableofcontents}{}
+
+
+% Special character
+\newcommand{\dollarSign}[0]{{\$}}
+\newcommand{\backTick}[0]{\`{}}
+
+%% Theorems
+\newtheorem{remark}{Remark}
+\newtheorem{theorem}{Theorem}
+\newtheorem{axiom}{Axiom}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+\newtheorem{definition}{Definition}
+\newtheorem{example}{Example}
+\newtheorem{exercise}{Exercise}
+\newtheorem{problem}{Problem}
+\newtheorem{exercises}{Exercises}
+\newcommand{\bs}[1]{$\backslash$#1}
+\newcommand{\texarg}[1]{\{#1\}}
+
+
+%% Environments
+\renewenvironment{quotation}
+  {\begin{adjustwidth}{2cm}{} \footnotesize}
+  {\end{adjustwidth}}
+
+\def\changemargin#1#2{\list{}{\rightmargin#2\leftmargin#1}\item[]}
+\let\endchangemargin=\endlist
+
+\renewenvironment{indent}
+  {\begin{adjustwidth}{0.75cm}{}}
+  {\end{adjustwidth}}
+
+
+%% NEWCOMMAND
+
+% \definecolor{mypink1}{rgb}{0.858, 0.188, 0.478}
+% \definecolor{mypink2}{RGB}{219, 48, 122}
+\newcommand{\fontRGB}[4]{
+    \definecolor{mycolor}{RGB}{#1, #2, #3}
+    \textcolor{mycolor}{#4}
+    }
+
+\newcommand{\highlightRGB}[4]{
+    \definecolor{mycolor}{RGB}{#1, #2, #3}
+    \sethlcolor{mycolor}
+    \hl{#4}
+     \sethlcolor{yellow}
+    }
+
+\newcommand{\gray}[2]{
+\definecolor{mygray}{gray}{#1}
+\textcolor{mygray}{#2}
+}
+
+\newcommand{\white}[1]{\gray{1}[#1]}
+\newcommand{\medgray}[1]{\gray{0.5}[#1]}
+\newcommand{\black}[1]{\gray{0}[#1]}
+
+% Spacing
+\parindent0pt
+\parskip5pt
+
+\begin{document}
+
+\title{Announcement}
+
+\date{}
+
+\author{}
+
+\maketitle
+
+\maketitle
+
+
+\setcounter{section}{0}
+
+
+\tableofcontents
+
+
+
+\imagecentercaptioned{thmb-7xn0oIF6a9eJ-y_4OO5vN0lJhCg-1500x0-filtersno_upscalemax_bytes150000strip_icc-humming-bird-flowers-GettyImages-1271839175-b515cb4f06a34e66b084ba617995f00a.eps}{0.51\textwidth,keepaspectratio}{Humming bird}
+
+\subsection{About Scripta} \label{about-scripta}
+
+\begin{itemize}
+
+\item{This is a demo of the \u{Scripta Markup Language}.   Compare source and rendered text to see how it works. Your document is rendered as you type.   There is no setup ... just have at it.}
+
+\item{You can't save documents right now, but you will be able to do that as soon as the full scripta app is released.}
+
+\item{Use the megaphone icon on the right to report bugs, ask questions, and make suggestions.   This an early alpha release of Scripta, so you \textbf{will} find bugs. We love to hear about them.}
+
+\item{Note the use of our experimental   \u{ergonomic TeX}: TeX without backslashes.}
+
+\item{Press ctrl-E to export your file to LaTeX.   This feature does not yet work with images, so for now you will have to hide them with a \u{hide} or
+\u{code} block.   A fix is on its way}
+
+\end{itemize}
+
+\subsection{Examples} \label{examples}
+
+\newcommand{\secpder}[2]{\frac{\partial^2 #1}{ \partial #2^2}}
+\newcommand{\nat}{\mathbb{N}}
+\newcommand{\reals}{\mathbb{R}}
+\newcommand{\pder}[2]{\frac{\partial #1}{ \partial #2}}
+\newcommand{\set}[1]{\{ #1 \}}
+\newcommand{\sett}[2]{\{ #1 \ | \ #2 \}}
+
+Pythagoras said: $a^2 + b^2 = c^2$.
+
+This will be on the test:
+
+\begin{equation}
+\int_0^1 x^n dx = \frac{1}{n+1}
+\end{equation}
+
+and so will this:
+
+\begin{equation}
+\label{wave-equation}\secpder{u}{x} + \secpder{u}{y} + \secpder{u}{z} = \frac{1}{c^2} \secpder{u}{t}
+\end{equation}
+
+Both of the above equalities were written using an \verb`equation` block.   If you look
+at the source text you will see that \eqref{wave-equation} an \u{argument} \verb`numbered` and
+a property, namely   \verb`label:wave-equation`. That property is used for cross-referencing: we say \verb`[eqref wave-equation]` to make a hot link to \eqref{wave-equation}.   Click on it now
+to see what happens.
+
+Here is an \u{aligned} block:
+
+\begin{align}
+\nat &= \set{\text{positive whole numbers and zero}}\nat &= \sett{n \text{ is a whole number}}{ n > 0}
+\end{align}
+
+\begin{equation}
+\begin{pmatrix}
+2 & 1 \\
+1 & 2
+\end{pmatrix}
+\begin{pmatrix}
+2 & 1 \\
+1 & 2
+\end{pmatrix}
+=
+\begin{pmatrix}
+5 & 4 \\
+4 & 5
+\end{pmatrix}
+\end{equation}
+
+\end{document}

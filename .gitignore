@@ -1,0 +1,8 @@
+elm-stuff/
+node_modules/
+assets/main-local.js
+assets/main-sqlite.js
+assets/main-tauri.js
+assets/main.js
+.DS_Store
+.idea/
