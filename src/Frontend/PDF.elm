@@ -27,13 +27,24 @@ type alias ImageRecord =
     }
 
 
+pdfErrorDecoder : D.Decoder Common.Model.PdfError
+pdfErrorDecoder =
+    D.map5 Common.Model.PdfError
+        (D.field "latex-begin" D.int)
+        (D.field "latex-end" D.int)
+        (D.field "latex-line" D.int)
+        (D.field "latex-text" D.string)
+        (D.field "scripta-line" D.int)
+
+
 pdfResponseDecoder : D.Decoder PdfResponse
 pdfResponseDecoder =
-    D.map4 PdfResponse
+    D.map5 PdfResponse
         (D.maybe (D.field "pdf" D.string))
         (D.maybe (D.field "errorReport" D.string))
         (D.field "hasErrors" D.bool)
         (D.oneOf [ D.field "pdfFailed" D.bool, D.succeed False ])
+        (D.maybe (D.field "errorJson" (D.list pdfErrorDecoder)))
 
 
 requestPDF : ExportData -> Cmd CommonMsg

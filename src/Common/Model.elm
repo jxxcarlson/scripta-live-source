@@ -2,6 +2,7 @@ module Common.Model exposing
     ( CommonModel
     , CommonMsg(..)
     , Flags
+    , PdfError
     , PdfResponse
     , PrintingState(..)
     , SortOrder(..)
@@ -41,11 +42,21 @@ type SortOrder
     | Recent
 
 
+type alias PdfError =
+    { latexBegin : Int
+    , latexEnd : Int
+    , latexLine : Int
+    , latexText : String
+    , scriptaLine : Int
+    }
+
+
 type alias PdfResponse =
     { pdf : Maybe String
     , errorReport : Maybe String
     , hasErrors : Bool
     , pdfFailed : Bool
+    , errorJson : Maybe (List PdfError)
     }
 
 
@@ -75,6 +86,8 @@ type alias CommonModel =
     , printingState : PrintingState
     , pdfLink : String
     , pdfResponse : Maybe PdfResponse
+    , pdfErrors : List PdfError
+    , showPdfErrors : Bool
 
     -- EDITOR
     , editorData : { begin : Int, end : Int }
@@ -147,6 +160,8 @@ type CommonMsg
     | SetCurrentDocument Document
     | ApplyEditorData ( Int, Int )
     | GotViewPort (Result Browser.Dom.Error Browser.Dom.Viewport)
+    | FocusOnEditorLine Int
+    | TogglePdfErrors
 
 
 type alias Flags =
@@ -226,6 +241,8 @@ initCommon flags =
     , printingState = PrintWaiting
     , pdfLink = ""
     , pdfResponse = Nothing
+    , pdfErrors = []
+    , showPdfErrors = False
 
     -- EDITOR
     , editorData = { begin = 0, end = 0 }

@@ -831,7 +831,29 @@ updateCommon msg model =
         Common.GotPdfResponse result ->
             case result of
                 Ok pdfResponse ->
-                    ( { model | common = { common | printingState = Common.PrintReady, pdfResponse = Just pdfResponse } }
+                    let
+                        _ =
+                            Debug.log "@@ GotPdfResponse - hasErrors" pdfResponse.hasErrors
+
+                        _ =
+                            Debug.log "@@ GotPdfResponse - pdfFailed" pdfResponse.pdfFailed
+
+                        _ =
+                            Debug.log "@@ GotPdfResponse - errorReport" pdfResponse.errorReport
+
+                        _ =
+                            Debug.log "@@ GotPdfResponse - errorJson" pdfResponse.errorJson
+
+                        pdfErrors =
+                            pdfResponse.errorJson |> Maybe.withDefault []
+
+                        _ =
+                            Debug.log "@@ GotPdfResponse - extracted pdfErrors length" (List.length pdfErrors)
+
+                        _ =
+                            Debug.log "@@ GotPdfResponse - extracted pdfErrors" pdfErrors
+                    in
+                    ( { model | common = { common | printingState = Common.PrintReady, pdfResponse = Just pdfResponse, pdfErrors = pdfErrors } }
                     , Cmd.none
                     )
 
@@ -958,6 +980,18 @@ updateCommon msg model =
                 , Process.sleep 500
                     |> Task.perform (always (CommonMsg Common.LoadContentIntoEditorDelayed))
                 ]
+            )
+
+        Common.FocusOnEditorLine lineNumber ->
+            -- Scroll to and highlight the specified line in the editor
+            -- Set both begin and end to the same line number to highlight a single line
+            ( { model | common = { common | editorData = { begin = lineNumber, end = lineNumber } } }
+            , Cmd.none
+            )
+
+        Common.TogglePdfErrors ->
+            ( { model | common = { common | showPdfErrors = not common.showPdfErrors } }
+            , Cmd.none
             )
 
         _ ->

@@ -145,7 +145,13 @@ mainColumn toMsg renderMsg model =
                             , Background.color (Style.borderColor model.theme)
                             ]
                             Element.none
-                       , sidebar toMsg model
+                       , Element.el
+                            [ width (px sidebarWidth)
+                            , height fill
+                            , Element.htmlAttribute (Html.Attributes.style "position" "relative")
+                            , Element.inFront (pdfErrorPanel toMsg model)
+                            ]
+                            (sidebar toMsg model)
                        ]
                 )
             ]
@@ -388,18 +394,30 @@ exportStuff toMsg model =
                                 , -- Show error report link if available
                                   case response.errorReport of
                                     Just errorFile ->
-                                        Element.newTabLink
-                                            [ Font.size 14
-                                            , Font.color (Element.rgb 0.8 0 0)
-                                            ]
-                                            { url = Config.pdfServUrl ++ errorFile
-                                            , label =
-                                                if response.pdfFailed then
-                                                    Element.text "Error Report (PDF generation failed)"
+                                        Element.column [ spacing 2, width fill ]
+                                            [ Element.newTabLink
+                                                [ Font.size 14
+                                                , Font.color (Element.rgb 0.8 0 0)
+                                                ]
+                                                { url = Config.pdfServUrl ++ errorFile
+                                                , label =
+                                                    if response.pdfFailed then
+                                                        Element.text "Error Log (PDF generation failed)"
 
-                                                else
-                                                    Element.text "Error Report"
-                                            }
+                                                    else
+                                                        Element.text "Error Log"
+                                                }
+                                            , if not (List.isEmpty model.pdfErrors) then
+                                                Widget.sidebarButton model.theme
+                                                    (Just (toMsg Common.TogglePdfErrors))
+                                                    (if model.showPdfErrors then
+                                                        "Hide Errors (" ++ String.fromInt (List.length model.pdfErrors) ++ ")"
+                                                     else
+                                                        "Show Errors (" ++ String.fromInt (List.length model.pdfErrors) ++ ")"
+                                                    )
+                                              else
+                                                Element.none
+                                            ]
 
                                     Nothing ->
                                         Element.none
@@ -820,3 +838,123 @@ sidebarButton2 modelTheme buttonTheme msg label =
         { onPress = msg
         , label = Element.text label
         }
+
+
+errorButton : (Common.CommonMsg -> msg) -> Theme.Theme -> Common.PdfError -> Element msg
+errorButton toMsg theme pdfError =
+    Input.button
+        [ paddingXY 8 4
+        , Background.color
+            (if theme == Theme.Light then
+                Element.rgb255 255 240 240
+             -- Light red tint
+             else
+                Element.rgb255 70 50 50
+             -- Dark red tint
+            )
+        , Font.color
+            (if theme == Theme.Light then
+                Element.rgb255 139 0 0
+             -- Dark red text
+             else
+                Element.rgb255 255 150 150
+             -- Light red text
+            )
+        , Border.rounded 4
+        , Border.width 1
+        , Border.color
+            (if theme == Theme.Light then
+                Element.rgba 0.8 0 0 0.5
+             -- Red border
+             else
+                Element.rgba 1.0 0.3 0.3 0.5
+             -- Light red border
+            )
+        , Font.size 12
+        , width fill
+        , Element.htmlAttribute (Html.Attributes.title pdfError.latexText)
+        , mouseOver
+            [ Background.color
+                (if theme == Theme.Light then
+                    Element.rgb255 255 220 220
+                 -- Lighter red on hover
+                 else
+                    Element.rgb255 90 60 60
+                 -- Lighter dark red on hover
+                )
+            , Border.color
+                (if theme == Theme.Light then
+                    Element.rgba 0.8 0 0 0.8
+                 -- Stronger red border on hover
+                 else
+                    Element.rgba 1.0 0.3 0.3 0.8
+                 -- Stronger light red border on hover
+                )
+            ]
+        , mouseDown
+            [ Background.color
+                (if theme == Theme.Light then
+                    Element.rgb255 255 200 200
+                 else
+                    Element.rgb255 100 65 65
+                )
+            ]
+        ]
+        { onPress = Just (toMsg (Common.FocusOnEditorLine pdfError.scriptaLine))
+        , label = Element.text ("Line " ++ String.fromInt pdfError.scriptaLine)
+        }
+
+
+pdfErrorPanel : (Common.CommonMsg -> msg) -> Common.CommonModel -> Element msg
+pdfErrorPanel toMsg model =
+    if not model.showPdfErrors || List.isEmpty model.pdfErrors then
+        Element.none
+    else
+        Element.el
+            [ Element.width (px tocWidth)
+            , height fill
+            , Element.htmlAttribute (Html.Attributes.style "position" "absolute")
+            , Element.htmlAttribute (Html.Attributes.style "top" "0")
+            , Element.htmlAttribute (Html.Attributes.style "bottom" "0")
+            , Element.htmlAttribute (Html.Attributes.style "right" (String.fromInt sidebarWidth ++ "px"))
+            , Element.htmlAttribute (Html.Attributes.style "pointer-events" "auto")
+            ]
+            (Element.column
+                [ width fill
+                , height fill
+                , Background.color
+                    (if model.theme == Theme.Light then
+                        Element.rgba 1 1 1 0.95
+                     else
+                        Element.rgba 0.1 0.1 0.1 0.95
+                    )
+                , Border.width 1
+                , Border.color
+                    (if model.theme == Theme.Light then
+                        Element.rgba 0.8 0 0 0.3
+                     else
+                        Element.rgba 1.0 0.3 0.3 0.3
+                    )
+                , padding 12
+                , spacing 6
+                , scrollbarY
+                , Element.htmlAttribute (Html.Attributes.style "overflow-y" "auto")
+                , Element.htmlAttribute (Html.Attributes.style "overflow-x" "hidden")
+                , Element.htmlAttribute (Html.Attributes.style "flex" "1")
+                , Element.htmlAttribute (Html.Attributes.style "min-height" "0")
+                ]
+                (Element.el
+                    [ Font.bold
+                    , Font.size 14
+                    , Font.color
+                        (if model.theme == Theme.Light then
+                            Element.rgb 0.8 0 0
+                         else
+                            Element.rgb 1.0 0.4 0.4
+                        )
+                    , paddingEach { top = 0, bottom = 8, left = 0, right = 0 }
+                    ]
+                    (Element.text ("PDF Errors (" ++ String.fromInt (List.length model.pdfErrors) ++ ")"))
+                    :: List.map (errorButton toMsg model.theme) model.pdfErrors
+                )
+            )
