@@ -19,12 +19,32 @@
     <!-- Load mhchem extension for chemistry formulas -->
     <script src="https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/contrib/mhchem.min.js"></script>
     <script>
-        console.log('mhchem script tag executed');
+        console.log('%c=== MHCHEM LOAD VERIFICATION ===', 'color: blue; font-weight: bold; font-size: 14px');
+        console.log('Page URL:', window.location.href);
+        console.log('mhchem script tag executed at:', new Date().toISOString());
         console.log('typeof katex:', typeof katex);
         console.log('typeof renderMathInElement:', typeof renderMathInElement);
+
+        // Check if mhchem is available
+        let mhchemLoaded = false;
+        if (typeof katex !== 'undefined') {
+            // Try to render a chemistry formula to verify mhchem works
+            try {
+                const testResult = katex.renderToString('\\ce{H2O}', { throwOnError: true });
+                mhchemLoaded = testResult.includes('H') && testResult.includes('O');
+                console.log('%c✓ mhchem SUCCESSFULLY LOADED and functional', 'color: green; font-weight: bold');
+            } catch (e) {
+                console.log('%c✗ mhchem FAILED to load - chemistry formulas will not work', 'color: red; font-weight: bold');
+                console.log('Error:', e.message);
+            }
+        } else {
+            console.log('%c✗ KaTeX not loaded yet - this is expected', 'color: orange');
+        }
+
         if (typeof katex !== 'undefined' && katex.__extensions) {
             console.log('KaTeX extensions:', katex.__extensions);
         }
+        console.log('%c================================', 'color: blue; font-weight: bold; font-size: 14px');
     </script>
 
     <!-- Then load the custom element wrapper -->

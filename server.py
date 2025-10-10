@@ -17,15 +17,19 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         # Serve from current directory (expects to be run from assets/)
         super().__init__(*args, **kwargs)
 
-    def list_directory(self, path):
-        """Override to serve index-sqlite.html if it exists in the directory."""
+    def translate_path(self, path):
+        """Translate a /-separated PATH to the local filename syntax."""
+        # If requesting root or a directory, try index-sqlite.html first
         import os
-        index_path = os.path.join(path, "index-sqlite.html")
-        if os.path.exists(index_path):
-            # Serve index-sqlite.html instead of directory listing
-            self.path = "/index-sqlite.html"
-            return self.do_GET()
-        return super().list_directory(path)
+        translated_path = super().translate_path(path)
+
+        # If the path is a directory, check for index-sqlite.html
+        if os.path.isdir(translated_path):
+            index_sqlite = os.path.join(translated_path, "index-sqlite.html")
+            if os.path.exists(index_sqlite):
+                return index_sqlite
+
+        return translated_path
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8012
