@@ -844,14 +844,23 @@ updateCommon msg model =
                         _ =
                             Debug.log "@@ GotPdfResponse - errorJson" pdfResponse.errorJson
 
-                        pdfErrors =
+                        rawErrors =
                             pdfResponse.errorJson |> Maybe.withDefault []
 
                         _ =
-                            Debug.log "@@ GotPdfResponse - extracted pdfErrors length" (List.length pdfErrors)
+                            Debug.log "@@ GotPdfResponse - raw errors count" (List.length rawErrors)
 
                         _ =
-                            Debug.log "@@ GotPdfResponse - extracted pdfErrors" pdfErrors
+                            Debug.log "@@ GotPdfResponse - raw errors" rawErrors
+
+                        pdfErrors =
+                            deduplicatePdfErrors rawErrors
+
+                        _ =
+                            Debug.log "@@ GotPdfResponse - deduplicated errors count" (List.length pdfErrors)
+
+                        _ =
+                            Debug.log "@@ GotPdfResponse - deduplicated errors" pdfErrors
                     in
                     ( { model | common = { common | printingState = Common.PrintReady, pdfResponse = Just pdfResponse, pdfErrors = pdfErrors } }
                     , Cmd.none
@@ -1250,6 +1259,35 @@ generateId : Random.Generator String
 generateId =
     Random.int 100000 999999
         |> Random.map (\n -> "doc-" ++ String.fromInt n)
+
+
+
+-- PDF ERROR DEDUPLICATION
+
+
+{-| Deduplicate PDF errors by scriptaLine, combining latexText fields
+-}
+deduplicatePdfErrors : List Common.PdfError -> List Common.PdfError
+deduplicatePdfErrors errors =
+    errors
+        |> List.Extra.gatherEqualsBy .scriptaLine
+        |> List.map combineErrorGroup
+
+
+{-| Combine a group of errors with the same scriptaLine into one error
+-}
+combineErrorGroup : ( Common.PdfError, List Common.PdfError ) -> Common.PdfError
+combineErrorGroup ( firstError, restErrors ) =
+    let
+        allErrors =
+            firstError :: restErrors
+
+        combinedLatexText =
+            allErrors
+                |> List.indexedMap (\index error -> "(" ++ String.fromInt (index + 1) ++ ") " ++ error.latexText)
+                |> String.join "; "
+    in
+    { firstError | latexText = combinedLatexText }
 
 
 

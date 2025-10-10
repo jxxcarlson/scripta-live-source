@@ -143,7 +143,7 @@ the current `EditRecord` into HTML.
 The `export` and `fileNameForExport` are functions used to transform source
 text in a given markup language to standard LaTeX. The transformed text
 can be used to produce a PDF file or a tar files that contains both the
-standard LaTeX source and a folder of images used in the documents.
+standare LaTeX source and a folder of images used in the documents.
 See the code in modules `PDF` and `Main` of `Example2` for more details.
 The Elm app sends data to `https://pdfServ.app`, a small server
 (165 lines of Haskell code) where it is turned into a PDF file or
