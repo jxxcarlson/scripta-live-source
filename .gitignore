@@ -1,8 +1,25 @@
+# Elm
 elm-stuff/
+
+# Node
 node_modules/
+
+# Build artifacts
 assets/main-local.js
 assets/main-sqlite.js
 assets/main-tauri.js
 assets/main.js
+
+# Editor files
 .DS_Store
 .idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Misc
+*.log
+*.orig
+.env
+.env.local
