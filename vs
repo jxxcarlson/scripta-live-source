@@ -83,6 +83,7 @@ cat > "$OUTPUT_HTML" << 'EOF'
     <!-- KaTeX for math rendering -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/katex.min.css" integrity="sha384-AfEj0r4/OFrOo5t7NnNe46zW/tFgW6x/bCJG8FqQCEo3+Aro6EYUG4+cU+KJWu/X" crossorigin="anonymous">
     <script src="https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/katex.min.js" integrity="sha384-g7c+Jr9ZivxKLnZTDUhnkOnsh30B4H0rpLUpJ4jAIKs4fnJI+sEnkvrMWph2EDg4" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/contrib/mhchem.min.js"></script>
 
     <style>
         body {
@@ -103,46 +104,47 @@ cat > "$OUTPUT_HTML" << 'EOF'
             flags: {}
         });
 
+        // Initialize math-text custom element for KaTeX
+        class MathText extends HTMLElement {
+            constructor() {
+                super();
+            }
+
+            connectedCallback() {
+                this.attachShadow({mode: "open"});
+
+                // Get properties (not attributes) - Elm sets these as properties
+                const content = this.content || '';
+                const display = this.display || false;
+
+                this.shadowRoot.innerHTML = katex.renderToString(
+                    content,
+                    { throwOnError: false, displayMode: display }
+                );
+
+                let link = document.createElement('link');
+                link.setAttribute('rel', 'stylesheet');
+                link.setAttribute('href', 'https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/katex.min.css');
+                this.shadowRoot.appendChild(link);
+            }
+        }
+
+        customElements.define('math-text', MathText);
+
         // Send file content to Elm
         const content = SCRIPTA_CONTENT_PLACEHOLDER;
         setTimeout(() => {
             app.ports.getFileContent.send(content);
         }, 100);
-
-        // Handle KaTeX rendering for custom elements
-        function renderKatex() {
-            document.querySelectorAll('katex-display, katex-inline').forEach(el => {
-                const tex = el.textContent;
-                const displayMode = el.tagName.toLowerCase() === 'katex-display';
-                try {
-                    katex.render(tex, el, {
-                        displayMode: displayMode,
-                        throwOnError: false
-                    });
-                } catch (e) {
-                    console.error('KaTeX error:', e);
-                }
-            });
-        }
-
-        // Render KaTeX after Elm renders
-        setTimeout(renderKatex, 200);
-
-        // Re-render on any DOM changes (for dynamic content)
-        const observer = new MutationObserver(renderKatex);
-        observer.observe(document.getElementById('app'), {
-            childList: true,
-            subtree: true
-        });
     </script>
 </body>
 </html>
 EOF
 
 # Escape the content for JavaScript and inject it
-# Save content to temp file for node to read
+# Save content to temp file for node to read (preserve backslashes)
 TEMP_CONTENT="$OUTPUT_DIR/content.tmp"
-echo "$SCRIPTA_CONTENT" > "$TEMP_CONTENT"
+printf '%s' "$SCRIPTA_CONTENT" > "$TEMP_CONTENT"
 
 # Use node to do the replacement safely
 node -e "
