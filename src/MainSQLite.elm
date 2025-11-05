@@ -20,6 +20,7 @@ import Http
 import Json.Decode as Decode
 import Keyboard
 import List.Extra
+import MarkdownToScripta
 import Ports
 import Process
 import Random
@@ -71,6 +72,8 @@ type Msg
     | FileLoaded String
     | LaTeXFileSelected File.File
     | LaTeXFileLoaded { filename : String, content : String }
+    | MarkdownFileSelected File.File
+    | MarkdownFileLoaded { filename : String, content : String }
 
 
 
@@ -212,6 +215,90 @@ update msg model =
                     Document.newDocument
                         newId
                         basename
+                        (Maybe.withDefault "" modelWithContent.common.userName)
+                        scriptaContent
+                        modelWithContent.common.theme
+                        modelWithContent.common.currentTime
+
+                -- Update the model with the new document
+                updatedCommon =
+                    let
+                        oldCommon =
+                            modelWithContent.common
+                    in
+                    { oldCommon
+                        | currentDocument = Just newDoc
+                        , documents = newDoc :: modelWithContent.common.documents
+                        , lastLoadedDocumentId = Just newId
+                        , sourceText = scriptaContent
+                        , initialText = scriptaContent
+                        , loadDocumentIntoEditor = True
+                    }
+
+                updatedModel =
+                    { modelWithContent | common = updatedCommon }
+
+                -- Get the storage command to save the document
+                storage =
+                    Storage.SQLite.storage StorageMsg
+            in
+            ( updatedModel
+            , Cmd.batch
+                [ cmdFromUpdate
+                , storage.saveDocument newDoc
+                , Process.sleep 100
+                    |> Task.perform (always (CommonMsg Common.ResetLoadFlag))
+                ]
+            )
+
+        MarkdownFileSelected file ->
+            ( model
+            , Task.perform (\content -> MarkdownFileLoaded { filename = File.name file, content = content }) (File.toString file)
+            )
+
+        MarkdownFileLoaded { filename, content } ->
+            let
+                -- Extract basename from filename (remove .md extension if present)
+                basename =
+                    if String.endsWith ".md" filename then
+                        String.dropRight 3 filename
+
+                    else
+                        filename
+
+                -- Convert non-alphanumeric characters to spaces, then map runs of spaces to hyphens
+                title =
+                    basename
+                        |> String.toList
+                        |> List.map
+                            (\char ->
+                                if Char.isAlphaNum char then
+                                    char
+
+                                else
+                                    ' '
+                            )
+                        |> String.fromList
+                        |> String.words
+                        |> String.join "-"
+
+                -- Convert Markdown to Scripta
+                scriptaContent =
+                    MarkdownToScripta.convert content
+
+                -- First update the content in the editor
+                ( modelWithContent, cmdFromUpdate ) =
+                    updateCommon (Common.InputText scriptaContent) model
+
+                -- Generate a new document ID
+                newId =
+                    "markdown-import-" ++ String.fromInt (Time.posixToMillis modelWithContent.common.currentTime // 1000)
+
+                -- Create a new document
+                newDoc =
+                    Document.newDocument
+                        newId
+                        title
                         (Maybe.withDefault "" modelWithContent.common.userName)
                         scriptaContent
                         modelWithContent.common.theme
@@ -779,6 +866,11 @@ updateCommon msg model =
         Common.ImportLaTeXFile ->
             ( model
             , File.Select.file [ "text/x-tex", "text/x-latex", ".tex", "application/x-tex" ] LaTeXFileSelected
+            )
+
+        Common.ImportMarkdownFile ->
+            ( model
+            , File.Select.file [ "text/markdown", ".md", ".markdown" ] MarkdownFileSelected
             )
 
         Common.PrintToPDF ->

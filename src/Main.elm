@@ -18,6 +18,7 @@ import Html exposing (Html)
 import Html.Attributes
 import Keyboard
 import List.Extra
+import MarkdownToScripta
 import Model exposing (Model, Msg(..))
 import Ports
 import Process
@@ -148,10 +149,14 @@ handleIncomingPortMsg msg model =
             ( { model | userName = Just name }
             , Cmd.none
             )
-            
+
         Ports.LastDocumentIdLoaded id ->
             -- Main.elm doesn't use localStorage, so we ignore this message
             ( model, Cmd.none )
+
+        Ports.MarkdownFileImported { fileName, content } ->
+            -- Convert markdown to scripta, then create a new document
+            update (MarkdownFileImported { fileName = fileName, content = content }) model
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -732,6 +737,46 @@ update msg model =
             --Frontend.EditorSync.firstSyncLR model ""
             ( model, Cmd.none )
 
+        RequestMarkdownImport ->
+            ( model, Ports.send Ports.RequestMarkdownImport )
+
+        MarkdownFileImported { fileName, content } ->
+            -- Convert markdown to scripta
+            let
+                scriptaContent =
+                    MarkdownToScripta.convert content
+
+                title =
+                    fileNameToTitle fileName
+            in
+            -- Save current document before creating new one
+            case model.currentDocument of
+                Just doc ->
+                    if model.sourceText /= doc.content then
+                        -- Current document has unsaved changes, save it first
+                        let
+                            ( newModel, saveCmd ) =
+                                update SaveDocument model
+                        in
+                        ( newModel
+                        , Cmd.batch
+                            [ saveCmd
+                            , Random.generate (InitialDocumentId scriptaContent title model.currentTime model.theme) generateId
+                            ]
+                        )
+
+                    else
+                        -- No unsaved changes
+                        ( model
+                        , Random.generate (InitialDocumentId scriptaContent title model.currentTime model.theme) generateId
+                        )
+
+                Nothing ->
+                    -- No current document
+                    ( model
+                    , Random.generate (InitialDocumentId scriptaContent title model.currentTime model.theme) generateId
+                    )
+
 
 
 -- VIEW
@@ -836,6 +881,7 @@ sidebar model =
             , Widget.toggleTheme model
             , crudButtons model
             , exportStuff model
+            , importStuff model
             , Element.el [ Element.paddingXY 0 8, Element.width Element.fill ] (Element.text "")
             , Element.column
                 [ spacing 4
@@ -890,6 +936,12 @@ exportStuff model =
     Element.row [ spacing 8, width fill ]
         [ Widget.sidebarButton model.theme (Just ExportToLaTeX) "LaTeX"
         , Widget.sidebarButton model.theme (Just ExportToRawLaTeX) "Raw LaTeX"
+        ]
+
+
+importStuff model =
+    Element.row [ spacing 8, width fill ]
+        [ Widget.sidebarButton model.theme (Just RequestMarkdownImport) "Import markdown"
         ]
 
 
@@ -1073,6 +1125,33 @@ normalize input =
         |> String.lines
         |> List.map String.trim
         |> String.join "\n"
+
+
+fileNameToTitle : String -> String
+fileNameToTitle fileName =
+    fileName
+        -- Remove .md extension if present
+        |> (\name ->
+                if String.endsWith ".md" name then
+                    String.dropRight 3 name
+
+                else
+                    name
+           )
+        -- Convert non-alphanumeric characters to spaces
+        |> String.toList
+        |> List.map
+            (\char ->
+                if Char.isAlphaNum char then
+                    char
+
+                else
+                    ' '
+            )
+        |> String.fromList
+        -- Map runs of spaces to a single hyphen
+        |> String.words
+        |> String.join "-"
 
 
 scrollToTop : Cmd Msg

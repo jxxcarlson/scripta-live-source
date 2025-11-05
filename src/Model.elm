@@ -102,6 +102,9 @@ type Msg
     | LRSync String
     | NextSync
     | SyncText String
+      -- Markdown Import
+    | RequestMarkdownImport
+    | MarkdownFileImported { fileName : String, content : String }
 
 
 initialDisplaySettings flags =

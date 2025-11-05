@@ -328,7 +328,10 @@ exportStuff toMsg model =
                             [ Widget.sidebarButton model.theme (Just (toMsg Common.ExportScriptaFile)) "Save Scripta"
                             , Widget.sidebarButton model.theme (Just (toMsg Common.ImportScriptaFile)) "Import Scripta"
                             ]
-                        , Widget.sidebarButton model.theme (Just (toMsg Common.ImportLaTeXFile)) "Import LaTeX"
+                        , Element.row [ spacing 2, width fill ]
+                            [ Widget.sidebarButton model.theme (Just (toMsg Common.ImportLaTeXFile)) "Import LaTeX"
+                            , Widget.sidebarButton model.theme (Just (toMsg Common.ImportMarkdownFile)) "Import markdown"
+                            ]
                         ]
                     ]
 
@@ -343,7 +346,10 @@ exportStuff toMsg model =
                             [ Widget.sidebarButton model.theme (Just (toMsg Common.ExportScriptaFile)) "Save Scripta"
                             , Widget.sidebarButton model.theme (Just (toMsg Common.ImportScriptaFile)) "Import Scripta"
                             ]
-                        , Widget.sidebarButton model.theme (Just (toMsg Common.ImportLaTeXFile)) "Import LaTeX"
+                        , Element.row [ spacing 2, width fill ]
+                            [ Widget.sidebarButton model.theme (Just (toMsg Common.ImportLaTeXFile)) "Import LaTeX"
+                            , Widget.sidebarButton model.theme (Just (toMsg Common.ImportMarkdownFile)) "Import markdown"
+                            ]
                         ]
                     , -- Display links based on PDF response
                       case model.pdfResponse of

@@ -1,0 +1,43 @@
+| title
+Test Document
+
+| author
+Claude
+
+| section
+Introduction
+
+This is a test Scripta document to demonstrate the **vs** command-line viewer.
+
+| subsection
+Features
+
+| item
+Real-time rendering
+| item
+Multiple markup languages
+| item
+Math support with KaTeX
+
+| section
+Mathematics
+
+Here is an inline equation: $E = mc^2$
+
+And a display equation:
+
+$$
+\\int_0^\\infty e^{-x^2} dx = \\frac{\\sqrt{\\pi}}{2}
+$$
+
+| section
+Code Example
+
+| code
+def hello():
+    print("Hello, Scripta!")
+
+| section
+Conclusion
+
+This demonstrates the Scripta rendering system working from the command line.

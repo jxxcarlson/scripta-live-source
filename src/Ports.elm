@@ -32,6 +32,7 @@ type OutgoingMsg
     | SaveLastDocumentId String
     | LoadLastDocumentId
     | SaveFile { fileName : String, content : String, mimeType : String }
+    | RequestMarkdownImport
 
 
 -- INCOMING MESSAGES (JS -> Elm)
@@ -43,6 +44,7 @@ type IncomingMsg
     | ThemeLoaded String
     | UserNameLoaded String
     | LastDocumentIdLoaded String
+    | MarkdownFileImported { fileName : String, content : String }
 
 
 -- Special export for compatibility
@@ -152,6 +154,11 @@ encodeOutgoing msg =
                 , ( "mimeType", Encode.string data.mimeType )
                 ]
 
+        RequestMarkdownImport ->
+            Encode.object
+                [ ( "tag", Encode.string "RequestMarkdownImport" )
+                ]
+
 
 -- DECODERS
 
@@ -189,6 +196,15 @@ decodeByTag tag =
         "LastDocumentIdLoaded" ->
             Decode.map LastDocumentIdLoaded
                 (Decode.field "data" Decode.string)
+
+        "MarkdownFileImported" ->
+            Decode.map MarkdownFileImported
+                (Decode.field "data"
+                    (Decode.map2 (\fileName content -> { fileName = fileName, content = content })
+                        (Decode.field "fileName" Decode.string)
+                        (Decode.field "content" Decode.string)
+                    )
+                )
 
         _ ->
             Decode.fail ("Unknown tag: " ++ tag)

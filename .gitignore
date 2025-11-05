@@ -9,6 +9,7 @@ assets/main-local.js
 assets/main-sqlite.js
 assets/main-tauri.js
 assets/main.js
+.vs-tmp/
 
 # Editor files
 .DS_Store
