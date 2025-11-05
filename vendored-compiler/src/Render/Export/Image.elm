@@ -230,7 +230,7 @@ imageParametersForBlock settings block =
         url =
             case block.body of
                 Left str ->
-                    str
+                    String.trim str
 
                 Right _ ->
                     "bad block"
