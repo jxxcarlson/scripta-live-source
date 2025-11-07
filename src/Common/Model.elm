@@ -218,7 +218,7 @@ initCommon flags =
     , count = 0
     , windowWidth = flags.window.windowWidth
     , windowHeight = flags.window.windowHeight
-    , currentLanguage = ScriptaV2.Language.EnclosureLang
+    , currentLanguage = ScriptaV2.Language.ScriptaLang
     , selectId = ""
     , title = ""
     , theme = theme
@@ -230,7 +230,7 @@ initCommon flags =
         , toc = []
         , title = Element.text ""
         }
-    , editRecord = ScriptaV2.DifferentialCompiler.init Dict.empty ScriptaV2.Language.EnclosureLang ""
+    , editRecord = ScriptaV2.DifferentialCompiler.init Dict.empty ScriptaV2.Language.ScriptaLang ""
     , documents = []
     , currentDocument = Nothing
     , showDocumentList = False

@@ -31,6 +31,7 @@ import ScriptaV2.DifferentialCompiler
 import ScriptaV2.Helper
 import ScriptaV2.Language
 import ScriptaV2.Msg exposing (MarkupMsg)
+import ScriptaV2.Types
 import Style
 import Task
 import Theme
@@ -109,9 +110,7 @@ handleIncomingPortMsg msg model =
                 , loadDocumentIntoEditor = True -- Trigger load
                 , compilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme model.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        model.displaySettings
+                        (makeCompilerParams model)
                         editRecord
               }
             , Cmd.none
@@ -129,9 +128,7 @@ handleIncomingPortMsg msg model =
 
                 newCompilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme newTheme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        model.displaySettings
+                        (makeCompilerParams { model | theme = newTheme })
                         model.editRecord
             in
             ( { model
@@ -175,9 +172,7 @@ update msg model =
 
                 newCompilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme model.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        newDisplaySettings
+                        (makeCompilerParams { model | displaySettings = newDisplaySettings })
                         model.editRecord
             in
             ( { model
@@ -213,9 +208,8 @@ update msg model =
                 , editRecord =
                     editRecord
                 , compilerOutput =
-                    ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput (Theme.mapTheme model.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        newDisplaySettings
+                    ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
+                        (makeCompilerParams { model | displaySettings = newDisplaySettings })
                         editRecord
               }
             , Cmd.none
@@ -244,9 +238,8 @@ update msg model =
                 , editRecord = editRecord
                 , loadDocumentIntoEditor = False -- Turn off loading after edit
                 , compilerOutput =
-                    ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput (Theme.mapTheme model.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        newDisplaySettings
+                    ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
+                        (makeCompilerParams { model | displaySettings = newDisplaySettings })
                         editRecord
               }
             , Cmd.none
@@ -264,7 +257,7 @@ update msg model =
                     else if List.member Keyboard.Control pressedKeys && List.member (Keyboard.Character "E") pressedKeys then
                         let
                             settings =
-                                Render.Settings.makeSettings model.displaySettings (Theme.mapTheme model.theme) model.selectId Nothing 1.0 model.windowWidth Dict.empty
+                                Render.Settings.makeSettings (makeCompilerParams model)
 
                             publicationData =
                                 { title = model.title
@@ -280,7 +273,7 @@ update msg model =
                     else if List.member Keyboard.Control pressedKeys && List.member (Keyboard.Character "R") pressedKeys then
                         let
                             settings =
-                                Render.Settings.makeSettings model.displaySettings (Theme.mapTheme model.theme) model.selectId Nothing 1.0 model.windowWidth Dict.empty
+                                Render.Settings.makeSettings (makeCompilerParams model)
 
                             exportText =
                                 Render.Export.LaTeX.rawExport settings model.editRecord.tree
@@ -385,9 +378,7 @@ update msg model =
 
                 newCompilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme newTheme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        model.displaySettings
+                        (makeCompilerParams { model | theme = newTheme })
                         model.editRecord
             in
             ( { model
@@ -457,9 +448,7 @@ update msg model =
                 , loadDocumentIntoEditor = True -- Trigger load for new document
                 , compilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme model.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        model.displaySettings
+                        (makeCompilerParams model)
                         editRecord
               }
             , Ports.send (Ports.SaveDocument newDoc)
@@ -595,7 +584,7 @@ update msg model =
         ExportToLaTeX ->
             let
                 settings =
-                    Render.Settings.makeSettings model.displaySettings (Theme.mapTheme model.theme) model.selectId Nothing 1.0 model.windowWidth Dict.empty
+                    Render.Settings.makeSettings (makeCompilerParams model)
 
                 publicationData =
                     { title = model.title
@@ -611,7 +600,7 @@ update msg model =
         ExportToRawLaTeX ->
             let
                 settings =
-                    Render.Settings.makeSettings model.displaySettings (Theme.mapTheme model.theme) model.selectId Nothing 1.0 model.windowWidth Dict.empty
+                    Render.Settings.makeSettings (makeCompilerParams model)
 
                 exportText =
                     Render.Export.LaTeX.rawExport settings model.editRecord.tree
@@ -638,9 +627,7 @@ update msg model =
                 , loadDocumentIntoEditor = True
                 , compilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme model.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        model.displaySettings
+                        (makeCompilerParams model)
                         editRecord
               }
             , Ports.send (Ports.SaveDocument initialDoc)
@@ -701,9 +688,7 @@ update msg model =
                 -- Re-render with updated settings
                 newCompilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme model.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        newDisplaySettings
+                        (makeCompilerParams { model | displaySettings = newDisplaySettings })
                         model.editRecord
 
                 newModel =
@@ -916,19 +901,34 @@ listButton model =
     Widget.sidebarButton model.theme (Just ToggleDocumentList) "List"
 
 
+makeCompilerParams : Model -> ScriptaV2.Types.CompilerParameters
+makeCompilerParams model =
+    let
+        oldParams =
+            ScriptaV2.Types.defaultCompilerParameters
+    in
+    { oldParams
+        | filter = ScriptaV2.Types.SuppressDocumentBlocks
+        , lang = model.currentLanguage
+        , docWidth = panelWidth model - 200
+        , editCount = model.count
+        , selectedId = model.selectId
+        , idsOfOpenNodes = model.displaySettings.idsOfOpenNodes
+        , theme = Theme.mapTheme model.theme
+        , windowWidth = model.windowWidth
+        , longEquationLimit = model.displaySettings.longEquationLimit
+        , scale = model.displaySettings.scale
+        , numberToLevel = model.displaySettings.numberToLevel
+        , data = model.displaySettings.data
+        , selectedSlug = model.displaySettings.selectedSlug
+    }
+
+
 compile : Model -> List (Element MarkupMsg)
 compile model =
     ScriptaV2.API.compileStringWithTitle
-        model.displaySettings
-        (Theme.mapTheme model.theme)
         ""
-        { filter = ScriptaV2.Compiler.SuppressDocumentBlocks
-        , lang = ScriptaV2.Language.EnclosureLang
-        , docWidth = panelWidth model - 200 --5 * xPadding
-        , editCount = model.count
-        , selectedId = model.selectId
-        , idsOfOpenNodes = []
-        }
+        (makeCompilerParams model)
         model.sourceText
 
 

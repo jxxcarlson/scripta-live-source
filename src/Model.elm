@@ -148,7 +148,7 @@ init flags =
             "Loading..."
 
         editRecord =
-            ScriptaV2.DifferentialCompiler.init Dict.empty ScriptaV2.Language.EnclosureLang normalizedTex
+            ScriptaV2.DifferentialCompiler.init Dict.empty ScriptaV2.Language.ScriptaLang normalizedTex
 
         currentTime =
             Time.millisToPosix flags.currentTime
@@ -158,7 +158,7 @@ init flags =
       , count = 1
       , windowWidth = flags.window.windowWidth
       , windowHeight = flags.window.windowHeight
-      , currentLanguage = ScriptaV2.Language.EnclosureLang
+      , currentLanguage = ScriptaV2.Language.ScriptaLang
       , selectId = "@InitID"
       , title = title_
       , theme = theme

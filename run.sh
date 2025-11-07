@@ -18,7 +18,7 @@ lsof -ti:8012 | xargs kill -9 2>/dev/null || true
 lsof -ti:8009 | xargs kill -9 2>/dev/null || true
 
 # Start the HTTP server in the background
-(cd assets && python ../server.py 8012) &
+(cd assets && python3 ../server.py 8012) &
 echo "HTTP server now running on port 8012 (serving index-sqlite.html)"
 
 # Run elm-watch hot

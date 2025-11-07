@@ -117,7 +117,6 @@ parseL latexSource =
             0
     in
     Generic.Compiler.parse_
-        MicroLaTeXLang
         MicroLaTeX.PrimitiveBlock.parse
         MicroLaTeX.Expression.parse
         idPrefix
@@ -713,8 +712,6 @@ renderItemWithContext newMacroNames context block =
     prefix ++ content
 
 
-
-
 {-| Smart join that doesn't add unnecessary spaces around inline math
 -}
 smartJoin : List String -> String
@@ -725,9 +722,11 @@ smartJoin parts =
             (\part acc ->
                 if String.isEmpty acc then
                     part
+
                 else if String.startsWith "$" part || String.endsWith "$" acc then
                     -- Don't add space before/after inline math
                     acc ++ part
+
                 else
                     acc ++ " " ++ part
             )
