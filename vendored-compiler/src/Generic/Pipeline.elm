@@ -4,14 +4,14 @@ import Dict exposing (Dict)
 import Either exposing (Either(..))
 import Generic.Language exposing (Expr(..), Expression, ExpressionBlock, Heading(..), PrimitiveBlock)
 import List.Extra
-import M.Expression
+import Scripta.Expression
 import ScriptaV2.Language exposing (Language(..))
 import Tools.Utility
 
 
 toExpressionBlock : (Int -> String -> List Expression) -> PrimitiveBlock -> ExpressionBlock
-toExpressionBlock parser block =
-    toExpressionBlock_ (parser block.meta.lineNumber) block
+toExpressionBlock exprParser block =
+    toExpressionBlock_ (exprParser block.meta.lineNumber) block
         |> Generic.Language.boostBlock
 
 
@@ -55,7 +55,7 @@ toExpressionBlock_ parse primitiveBlock =
                     -- Generic.Language.getMeta block)
                     content_ : List (List Expression)
                     content_ =
-                        List.map (M.Expression.parse 0) items
+                        List.map (Scripta.Expression.parse 0) items
                 in
                 Right (List.map (\list -> ExprList list Generic.Language.emptyExprMeta) content_)
 
@@ -148,14 +148,14 @@ fixTable block lang parse =
         t1 : List Expression
         t1 =
             case lang of
-                MicroLaTeXLang ->
+                MiniLaTeXLang ->
                     prepareTableLaTeX parse (String.join "\n" block.body)
 
-                EnclosureLang ->
+                ScriptaLang ->
                     prepareTableL0 parse (String.join "\n" block.body)
 
                 SMarkdownLang ->
-                    prepareTableL0 (M.Expression.parse 0) (String.join "\n" block.body)
+                    prepareTableL0 (Scripta.Expression.parse 0) (String.join "\n" block.body)
 
                 MarkdownLang ->
                     -- Standard Markdown doesn't use the same table structure
