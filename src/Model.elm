@@ -148,7 +148,7 @@ init flags =
             "Loading..."
 
         editRecord =
-            ScriptaV2.DifferentialCompiler.init Dict.empty ScriptaV2.Language.ScriptaLang normalizedTex
+            ScriptaV2.DifferentialCompiler.init Nothing Dict.empty ScriptaV2.Language.ScriptaLang normalizedTex
 
         currentTime =
             Time.millisToPosix flags.currentTime

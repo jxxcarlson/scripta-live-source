@@ -230,7 +230,7 @@ initCommon flags =
         , toc = []
         , title = Element.text ""
         }
-    , editRecord = ScriptaV2.DifferentialCompiler.init Dict.empty ScriptaV2.Language.ScriptaLang ""
+    , editRecord = ScriptaV2.DifferentialCompiler.init Nothing Dict.empty ScriptaV2.Language.ScriptaLang ""
     , documents = []
     , currentDocument = Nothing
     , showDocumentList = False

@@ -10,6 +10,7 @@ import Config
 import Constants exposing (constants)
 import Dict
 import Document exposing (Document)
+import Either
 import Editor
 import Element exposing (..)
 import File.Download
@@ -24,10 +25,11 @@ import Process
 import Random
 import Render.Export.LaTeX
 import Render.Settings
+import Render.Types
 import ScriptaV2.API
-import ScriptaV2.Compiler
 import ScriptaV2.DifferentialCompiler
 import ScriptaV2.Helper
+import ScriptaV2.Types
 import ScriptaV2.Language
 import ScriptaV2.Msg exposing (MarkupMsg)
 import Storage.Interface as Storage
@@ -121,7 +123,7 @@ updateCommon msg model =
         Common.InputText str ->
             let
                 newEditRecord =
-                    ScriptaV2.DifferentialCompiler.update common.editRecord str
+                    ScriptaV2.DifferentialCompiler.update Nothing common.editRecord str
 
                 newCount =
                     common.count + 1
@@ -136,9 +138,7 @@ updateCommon msg model =
 
                 newCompilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme common.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        updatedDisplaySettings
+                        (makeCompilerParams { common | displaySettings = updatedDisplaySettings, count = newCount })
                         newEditRecord
 
                 newCommon =
@@ -157,7 +157,7 @@ updateCommon msg model =
         Common.InputText2 { position, source } ->
             let
                 newEditRecord =
-                    ScriptaV2.DifferentialCompiler.update common.editRecord source
+                    ScriptaV2.DifferentialCompiler.update Nothing common.editRecord source
 
                 newCount =
                     common.count + 1
@@ -172,9 +172,7 @@ updateCommon msg model =
 
                 newCompilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme common.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        updatedDisplaySettings
+                        (makeCompilerParams { common | displaySettings = updatedDisplaySettings, count = newCount })
                         newEditRecord
 
                 newCommon =
@@ -216,17 +214,15 @@ updateCommon msg model =
                     }
 
                 newEditRecord =
-                    ScriptaV2.DifferentialCompiler.update common.editRecord common.sourceText
+                    ScriptaV2.DifferentialCompiler.update Nothing common.editRecord common.sourceText
 
                 newCompilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme common.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        newDisplaySettings
+                        (makeCompilerParams { common | displaySettings = newDisplaySettings, windowWidth = width })
                         newEditRecord
 
                 newCommon =
-                    { common 
+                    { common
                         | windowWidth = width
                         , windowHeight = height
                         , displaySettings = newDisplaySettings
@@ -252,17 +248,15 @@ updateCommon msg model =
                         Theme.Dark
 
                 newEditRecord =
-                    ScriptaV2.DifferentialCompiler.update common.editRecord common.sourceText
+                    ScriptaV2.DifferentialCompiler.update Nothing common.editRecord common.sourceText
 
                 newCompilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme newTheme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        common.displaySettings
+                        (makeCompilerParams { common | theme = newTheme })
                         newEditRecord
 
                 newCommon =
-                    { common 
+                    { common
                         | theme = newTheme
                         , editRecord = newEditRecord
                         , compilerOutput = newCompilerOutput
@@ -306,13 +300,11 @@ updateCommon msg model =
                     Document.newDocument id "New Document" (Maybe.withDefault "" common.userName) newDocumentContent common.theme common.currentTime
 
                 editRecord =
-                    ScriptaV2.DifferentialCompiler.init Dict.empty common.currentLanguage newDocumentContent
+                    ScriptaV2.DifferentialCompiler.init Nothing Dict.empty common.currentLanguage newDocumentContent
 
                 compilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme common.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        common.displaySettings
+                        (makeCompilerParams common)
                         editRecord
 
                 newCommon =
@@ -441,16 +433,17 @@ updateCommon msg model =
         Common.ExportToLaTeX ->
             let
                 settings =
-                    Render.Settings.makeSettings common.displaySettings (Theme.mapTheme common.theme) "-" Nothing 1.0 common.windowWidth Dict.empty
+                    Render.Settings.makeSettings (makeCompilerParams common)
 
                 publicationData =
                     { title = common.title
                     , authorList = []
-                    , kind = "article"
+                    , kind = Render.Types.DKArticle
+                    , date = Either.Left common.currentTime
                     }
 
                 exportText =
-                    Render.Export.LaTeX.export common.currentTime publicationData settings common.editRecord.tree
+                    Render.Export.LaTeX.export publicationData settings common.editRecord.tree
             in
             ( model
             , Ports.tauriCommand <|
@@ -465,7 +458,7 @@ updateCommon msg model =
         Common.ExportToRawLaTeX ->
             let
                 settings =
-                    Render.Settings.makeSettings common.displaySettings (Theme.mapTheme common.theme) "-" Nothing 1.0 common.windowWidth Dict.empty
+                    Render.Settings.makeSettings (makeCompilerParams common)
 
                 exportText =
                     Render.Export.LaTeX.rawExport settings common.editRecord.tree
@@ -510,16 +503,17 @@ updateCommon msg model =
         Common.PrintToPDF ->
             let
                 settings =
-                    Render.Settings.makeSettings common.displaySettings (Theme.mapTheme common.theme) "-" Nothing 1.0 common.windowWidth Dict.empty
+                    Render.Settings.makeSettings (makeCompilerParams common)
 
                 publicationData =
                     { title = common.title
                     , authorList = []
-                    , kind = "article"
+                    , kind = Render.Types.DKArticle
+                    , date = Either.Left common.currentTime
                     }
 
                 exportText =
-                    Render.Export.LaTeX.export common.currentTime publicationData settings common.editRecord.tree
+                    Render.Export.LaTeX.export publicationData settings common.editRecord.tree
 
                 fileName =
                     if String.trim common.title == "" then
@@ -578,9 +572,7 @@ updateCommon msg model =
                 -- Re-render with updated settings
                 newCompilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme common.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        newDisplaySettings
+                        (makeCompilerParams { common | displaySettings = newDisplaySettings, selectedId = firstId })
                         common.editRecord
                 
                 newCommon =
@@ -628,13 +620,11 @@ updateCommon msg model =
                     Document.newDocument id title (Maybe.withDefault "" common.userName) content theme currentTime
 
                 editRecord =
-                    ScriptaV2.DifferentialCompiler.init Dict.empty common.currentLanguage content
+                    ScriptaV2.DifferentialCompiler.init Nothing Dict.empty common.currentLanguage content
 
                 compilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme common.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        common.displaySettings
+                        (makeCompilerParams common)
                         editRecord
 
                 newCommon =
@@ -658,6 +648,28 @@ updateCommon msg model =
         _ ->
             -- Handle other messages with no-op for now
             ( model, Cmd.none )
+
+
+makeCompilerParams : Common.CommonModel -> ScriptaV2.Types.CompilerParameters
+makeCompilerParams common =
+    let
+        oldParams = common.params
+    in
+    { oldParams
+        | filter = ScriptaV2.Types.SuppressDocumentBlocks
+        , theme = Theme.mapTheme common.theme
+        , editCount = common.count
+        , selectedId = common.selectedId
+        , selectedSlug = common.displaySettings.selectedSlug
+        , idsOfOpenNodes = common.displaySettings.idsOfOpenNodes
+        , windowWidth = common.displaySettings.windowWidth
+        , longEquationLimit = common.displaySettings.longEquationLimit
+        , scale = common.displaySettings.scale
+        , numberToLevel = common.displaySettings.numberToLevel
+        , data = common.displaySettings.data
+        , docWidth = common.displaySettings.windowWidth
+        , lang = common.currentLanguage
+    }
 
 
 handleStorageMsg : Storage.StorageMsg -> Model -> ( Model, Cmd Msg )
@@ -686,13 +698,11 @@ handleStorageMsg msg model =
         Storage.DocumentLoaded (Ok doc) ->
             let
                 editRecord =
-                    ScriptaV2.DifferentialCompiler.init Dict.empty common.currentLanguage doc.content
+                    ScriptaV2.DifferentialCompiler.init Nothing Dict.empty common.currentLanguage doc.content
 
                 compilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme doc.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        common.displaySettings
+                        (makeCompilerParams { common | theme = doc.theme })
                         editRecord
 
                 newCommon =
@@ -808,13 +818,11 @@ handleStorageMsg msg model =
 
                 -- Update the model with the new document
                 editRecord =
-                    ScriptaV2.DifferentialCompiler.init Dict.empty model.common.currentLanguage content
+                    ScriptaV2.DifferentialCompiler.init Nothing Dict.empty model.common.currentLanguage content
 
                 compilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (Theme.mapTheme model.common.theme)
-                        ScriptaV2.Compiler.SuppressDocumentBlocks
-                        model.common.displaySettings
+                        (makeCompilerParams model.common)
                         editRecord
 
                 updatedCommon =

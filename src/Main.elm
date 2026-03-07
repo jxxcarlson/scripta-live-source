@@ -6,6 +6,7 @@ import Browser.Dom
 import Browser.Events
 import Constants exposing (constants)
 import Dict
+import Either
 import Document exposing (Document)
 import Editor
 import Element exposing (..)
@@ -25,6 +26,7 @@ import Process
 import Random
 import Render.Export.LaTeX
 import Render.Settings
+import Render.Types
 import ScriptaV2.API
 import ScriptaV2.Compiler
 import ScriptaV2.DifferentialCompiler
@@ -97,7 +99,7 @@ handleIncomingPortMsg msg model =
                     doc.title
 
                 editRecord =
-                    ScriptaV2.DifferentialCompiler.init Dict.empty model.currentLanguage doc.content
+                    ScriptaV2.DifferentialCompiler.init Nothing Dict.empty model.currentLanguage doc.content
             in
             ( { model
                 | currentDocument = Just doc
@@ -187,7 +189,7 @@ update msg model =
         InputText str ->
             let
                 editRecord =
-                    ScriptaV2.DifferentialCompiler.update model.editRecord str
+                    ScriptaV2.DifferentialCompiler.update Nothing model.editRecord str
 
                 oldDisplaySettings =
                     model.displaySettings
@@ -218,7 +220,7 @@ update msg model =
         InputText2 { position, source } ->
             let
                 editRecord =
-                    ScriptaV2.DifferentialCompiler.update model.editRecord source
+                    ScriptaV2.DifferentialCompiler.update Nothing model.editRecord source
 
                 oldDisplaySettings =
                     model.displaySettings
@@ -262,11 +264,12 @@ update msg model =
                             publicationData =
                                 { title = model.title
                                 , authorList = []
-                                , kind = "article"
+                                , kind = Render.Types.DKArticle
+                                , date = Either.Left model.currentTime
                                 }
 
                             exportText =
-                                Render.Export.LaTeX.export model.currentTime publicationData settings model.editRecord.tree
+                                Render.Export.LaTeX.export publicationData settings model.editRecord.tree
                         in
                         File.Download.string (model.title ++ ".tex") "application/x-latex" exportText
 
@@ -436,7 +439,7 @@ update msg model =
                     Document.newDocument id "New Document" (Maybe.withDefault "" model.userName) newDocumentContent model.theme model.currentTime
 
                 editRecord =
-                    ScriptaV2.DifferentialCompiler.init Dict.empty model.currentLanguage newDocumentContent
+                    ScriptaV2.DifferentialCompiler.init Nothing Dict.empty model.currentLanguage newDocumentContent
             in
             ( { model
                 | currentDocument = Just newDoc
@@ -589,11 +592,12 @@ update msg model =
                 publicationData =
                     { title = model.title
                     , authorList = []
-                    , kind = "article"
+                    , kind = Render.Types.DKArticle
+                    , date = Either.Left model.currentTime
                     }
 
                 exportText =
-                    Render.Export.LaTeX.export model.currentTime publicationData settings model.editRecord.tree
+                    Render.Export.LaTeX.export publicationData settings model.editRecord.tree
             in
             ( model, File.Download.string (model.title ++ ".tex") "application/x-latex" exportText )
 
@@ -616,7 +620,7 @@ update msg model =
                     Document.newDocument id title (Maybe.withDefault "" model.userName) content theme currentTime
 
                 editRecord =
-                    ScriptaV2.DifferentialCompiler.init Dict.empty model.currentLanguage content
+                    ScriptaV2.DifferentialCompiler.init Nothing Dict.empty model.currentLanguage content
             in
             ( { model
                 | currentDocument = Just initialDoc
@@ -915,7 +919,7 @@ makeCompilerParams model =
         , selectedId = model.selectId
         , idsOfOpenNodes = model.displaySettings.idsOfOpenNodes
         , theme = Theme.mapTheme model.theme
-        , windowWidth = model.windowWidth
+        , windowWidth = panelWidth model
         , longEquationLimit = model.displaySettings.longEquationLimit
         , scale = model.displaySettings.scale
         , numberToLevel = model.displaySettings.numberToLevel

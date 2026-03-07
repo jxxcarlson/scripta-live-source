@@ -9,6 +9,7 @@ import Common.View
 import Constants exposing (constants)
 import Dict
 import Document exposing (Document)
+import Either
 import Editor
 import Element exposing (..)
 import File
@@ -27,6 +28,7 @@ import Random
 import Render.Export.LaTeX
 import Render.Export.LaTeXToScripta
 import Render.Settings
+import Render.Types
 import ScriptaV2.API
 import ScriptaV2.Compiler
 import ScriptaV2.DifferentialCompiler
@@ -352,7 +354,7 @@ updateCommon msg model =
         Common.InputText str ->
             let
                 newEditRecord =
-                    ScriptaV2.DifferentialCompiler.update common.editRecord str
+                    ScriptaV2.DifferentialCompiler.update Nothing common.editRecord str
 
                 newCount =
                     common.count + 1
@@ -417,7 +419,7 @@ updateCommon msg model =
         Common.InputText2 { position, source } ->
             let
                 newEditRecord =
-                    ScriptaV2.DifferentialCompiler.update common.editRecord source
+                    ScriptaV2.DifferentialCompiler.update Nothing common.editRecord source
 
                 newCount =
                     common.count + 1
@@ -561,7 +563,7 @@ updateCommon msg model =
                     makeCompilerParams newModel newDisplaySettings
 
                 newEditRecord =
-                    ScriptaV2.DifferentialCompiler.update common.editRecord common.sourceText
+                    ScriptaV2.DifferentialCompiler.update Nothing common.editRecord common.sourceText
 
                 newCompilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
@@ -603,7 +605,7 @@ updateCommon msg model =
                     makeCompilerParams newCommon common.displaySettings
 
                 newEditRecord =
-                    ScriptaV2.DifferentialCompiler.update common.editRecord common.sourceText
+                    ScriptaV2.DifferentialCompiler.update Nothing common.editRecord common.sourceText
 
                 newCompilerOutput =
                     ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
@@ -656,7 +658,7 @@ updateCommon msg model =
                     Document.newDocument id "New Document" (Maybe.withDefault "" common.userName) newDocumentContent common.theme common.currentTime
 
                 editRecord =
-                    ScriptaV2.DifferentialCompiler.init Dict.empty common.currentLanguage newDocumentContent
+                    ScriptaV2.DifferentialCompiler.init Nothing Dict.empty common.currentLanguage newDocumentContent
 
                 params =
                     makeCompilerParams common common.displaySettings
@@ -817,11 +819,12 @@ updateCommon msg model =
                 publicationData =
                     { title = common.title
                     , authorList = []
-                    , kind = "article"
+                    , kind = Render.Types.DKArticle
+                    , date = Either.Left common.currentTime
                     }
 
                 exportText =
-                    Render.Export.LaTeX.export common.currentTime publicationData settings common.editRecord.tree
+                    Render.Export.LaTeX.export publicationData settings common.editRecord.tree
 
                 fileName =
                     common.title ++ ".tex"
@@ -890,11 +893,12 @@ updateCommon msg model =
                 publicationData =
                     { title = common.title
                     , authorList = []
-                    , kind = "article"
+                    , kind = Render.Types.DKArticle
+                    , date = Either.Left common.currentTime
                     }
 
                 exportText =
-                    Render.Export.LaTeX.export common.currentTime publicationData (ScriptaV2.Settings.renderSettingsFromCompilerParameters params) common.editRecord.tree
+                    Render.Export.LaTeX.export publicationData (ScriptaV2.Settings.renderSettingsFromCompilerParameters params) common.editRecord.tree
 
                 exportData =
                     { title = common.title
@@ -1052,7 +1056,7 @@ updateCommon msg model =
                     Document.newDocument id title (Maybe.withDefault "" common.userName) content theme currentTime
 
                 editRecord =
-                    ScriptaV2.DifferentialCompiler.init Dict.empty common.currentLanguage content
+                    ScriptaV2.DifferentialCompiler.init Nothing Dict.empty common.currentLanguage content
 
                 params =
                     makeCompilerParams common common.displaySettings
@@ -1127,7 +1131,7 @@ handleStorageMsg msg model =
         Storage.DocumentLoaded (Ok doc) ->
             let
                 editRecord =
-                    ScriptaV2.DifferentialCompiler.init Dict.empty common.currentLanguage doc.content
+                    ScriptaV2.DifferentialCompiler.init Nothing Dict.empty common.currentLanguage doc.content
 
                 params =
                     makeCompilerParams common common.displaySettings
@@ -1390,14 +1394,20 @@ makeCompilerParams : Common.CommonModel -> ScriptaV2.Settings.DisplaySettings ->
 makeCompilerParams common displaySettings =
     let
         oldParams =
-            ScriptaV2.Types.defaultCompilerParameters
+            common.params
     in
     { oldParams
         | filter = ScriptaV2.Types.SuppressDocumentBlocks
         , theme = Theme.mapTheme common.theme
-        , windowWidth = Common.View.panelWidth common - 30
+        , editCount = common.count
+        , selectedId = common.selectedId
+        , selectedSlug = displaySettings.selectedSlug
         , idsOfOpenNodes = displaySettings.idsOfOpenNodes
+        , windowWidth = displaySettings.windowWidth
+        , longEquationLimit = displaySettings.longEquationLimit
+        , scale = displaySettings.scale
         , numberToLevel = displaySettings.numberToLevel
-        , selectedId = displaySettings.selectedId
-        , editCount = displaySettings.counter
+        , data = displaySettings.data
+        , docWidth = displaySettings.windowWidth
+        , lang = common.currentLanguage
     }
