@@ -9,12 +9,6 @@ module ScriptaV2.Compiler exposing
 
 -}
 
--- Previous exposing list:
---( CompilerOutput, Filter(..), compile, parse, parseFromString, render, renderForest, view, viewTOC, filterForest, px, viewBody
---, CompilerParameters, filterForest2, header, header_, parseM, pl, pm, ps, viewBodyOnly, view_
---)
--- import Markdown.Compiler
-
 import Dict
 import Element exposing (Element)
 import Element.Font as Font
@@ -23,16 +17,16 @@ import Generic.Acc exposing (Accumulator)
 import Generic.Compiler
 import Generic.Forest exposing (Forest)
 import Generic.Language exposing (ExpressionBlock)
-import Scripta.Expression
-import Scripta.PrimitiveBlock
-import MicroLaTeX.Expression
-import MicroLaTeX.PrimitiveBlock
+import Generic.Vector
+import MiniLaTeX.Expression
+import MiniLaTeX.PrimitiveBlock
 import Render.Block
 import Render.Settings
 import Render.TOCTree
-import Render.Theme
 import Render.Tree
 import RoseTree.Tree
+import Scripta.Expression
+import Scripta.PrimitiveBlock
 import ScriptaV2.Config as Config
 import ScriptaV2.Language exposing (Language(..))
 import ScriptaV2.Msg exposing (MarkupMsg(..))
@@ -74,14 +68,6 @@ view width_ compiled =
     ]
 
 
-view_ : Int -> CompilerOutput -> List (Element MarkupMsg)
-view_ width_ compiled =
-    [ Element.column [ Element.width (Element.px (width_ - 60)) ]
-        (header_ compiled)
-    , body compiled
-    ]
-
-
 {-| -}
 viewBody : Int -> CompilerOutput -> List (Element MarkupMsg)
 viewBody width_ compiled =
@@ -89,10 +75,6 @@ viewBody width_ compiled =
         (header_ compiled)
     , body compiled
     ]
-
-
-
---viewBodyOnly : Int -> CompilerOutput -> List (Element MarkupMsg)
 
 
 viewBodyOnly : Int -> CompilerOutput -> List (Element MarkupMsg)
@@ -236,7 +218,7 @@ px str =
 -}
 parseMiniLaTeX : String -> Int -> List String -> Forest ExpressionBlock
 parseMiniLaTeX idPrefix outerCount lines =
-    Generic.Compiler.parse_ MicroLaTeX.PrimitiveBlock.parse MicroLaTeX.Expression.parse idPrefix outerCount lines
+    Generic.Compiler.parse_ MiniLaTeX.PrimitiveBlock.parse MiniLaTeX.Expression.parse idPrefix outerCount lines
 
 
 
@@ -340,6 +322,10 @@ render params ( accumulator_, forest_ ) =
             Generic.ASTTools.banner forest_
                 |> Maybe.map (Render.Block.renderBody params.editCount accumulator_ renderSettings [ Font.color (Element.rgb 1 0 0) ])
                 |> Maybe.map (Element.row [ Element.height (Element.px 40) ])
+
+        chapterNumber : Maybe Int
+        chapterNumber =
+            accumulator_.headingIndex |> .content >> List.head
 
         title : Element MarkupMsg
         title =

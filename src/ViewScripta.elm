@@ -125,7 +125,6 @@ viewContent content =
             , numberToLevel = 1
             , data = Dict.empty
             }
-
         elements =
             ScriptaV2.API.compileString params content
                 |> List.map (Element.map MarkupMsg)

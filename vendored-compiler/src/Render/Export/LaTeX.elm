@@ -1,4 +1,7 @@
-module Render.Export.LaTeX exposing (export, exportExpr, rawExport)
+module Render.Export.LaTeX exposing
+    ( export, exportExpr, rawExport
+    , getPublicationData
+    )
 
 {-|
 
@@ -17,12 +20,13 @@ import Generic.Forest exposing (Forest)
 import Generic.Language exposing (Expr(..), Expression, ExpressionBlock, Heading(..))
 import Generic.TextMacro
 import List.Extra
-import MicroLaTeX.Util
+import MiniLaTeX.Util
 import Render.Data
 import Render.Export.Image
 import Render.Export.Preamble
 import Render.Export.Util
 import Render.Settings exposing (RenderSettings)
+import Render.Types
 import Render.Utility as Utility
 import RoseTree.Tree as Tree exposing (Tree(..))
 import Time
@@ -37,23 +41,97 @@ counterValue ast =
         |> Maybe.andThen String.toInt
 
 
-type alias PublicationData =
-    { title : String
-    , authorList : List String
-    , kind : String
-    }
-
-
-{-| -}
-export : Time.Posix -> PublicationData -> RenderSettings -> List (Tree ExpressionBlock) -> String
-export currentTime publicationData settings_ ast =
+getPublicationData : Render.Types.PublicationData -> List (Tree ExpressionBlock) -> ( Dict String String, Render.Types.PublicationData )
+getPublicationData pdData ast =
     let
         titleData : Maybe ExpressionBlock
         titleData =
             ASTTools.getBlockByName "title" ast
 
+        --type alias PublicationData =
+        --    { title : String
+        --    , authorList : List String
+        --    , kind : DocumentKind
+        --    , date : Either Time.Posix String
+        --    }
+        --@=@publicationData:
+        --  { authorList = ["jxxcarlson"]
+        --  , date = Left (Posix 1768140009170)
+        --  , kind = DKChapter
+        --  , title = "Physics Notebook: On Optics" } id-8ab81e41-c88e-4136-9985-14ca059756fc:286:10
+        --@=@_in_export:publicationData:
+        --  { authorList = ["jxxcarlson"]
+        --  , date = Right "January 17, 2026"
+        --  , kind = DKChapter
+        --  , title = "Physics Notebook: On Optics" } id-8ab81e41-c88e-4136-9985-14ca059756fc:286:10
+        --@=@!!_frontMatter:
+        --  "\\begin{document}\n\n\\title{Physics Notebook: On Optics}\n\n\\date{}\n\n\\author{\njxxcarlson\n}\n\n\\maketitle"
+        --title =
+        --    case titleData of
+        --        Nothing ->
+        --            "Untitled"
+        --
+        --        Just expr ->
+        --            case expr.body of
+        --                Right [ Text str _ ] ->
+        --                    str
+        --
+        --                _ ->
+        --                    "Untitled"
+        -- Extract properties from title block, including the title text itself
+        properties : Dict String String
         properties =
             Maybe.map .properties titleData
+                |> Maybe.map (Dict.insert "title" pdData.title)
+                |> Maybe.withDefault Dict.empty
+    in
+    ( properties
+    , { title = pdData.title
+      , authorList =
+            case Dict.get "author" properties of
+                Just str ->
+                    String.split "," str
+
+                Nothing ->
+                    pdData.authorList
+      , date =
+            case Dict.get "date" properties of
+                Nothing ->
+                    pdData.date
+
+                Just dateString ->
+                    Either.Right dateString
+      , kind = pdData.kind
+      }
+    )
+
+
+{-| -}
+export : Render.Types.PublicationData -> RenderSettings -> List (Tree ExpressionBlock) -> String
+export publicationData settings_ ast =
+    let
+        titleData : Maybe ExpressionBlock
+        titleData =
+            ASTTools.getBlockByName "title" ast
+
+        title =
+            case titleData of
+                Nothing ->
+                    "Untitled"
+
+                Just expr ->
+                    case expr.body of
+                        Right [ Text str _ ] ->
+                            str
+
+                        _ ->
+                            "Untitled"
+
+        -- Extract properties from title block, including the title text itself
+        properties : Dict String String
+        properties =
+            Maybe.map .properties titleData
+                |> Maybe.map (Dict.insert "title" title)
                 |> Maybe.withDefault Dict.empty
 
         settings =
@@ -87,7 +165,7 @@ export currentTime publicationData settings_ ast =
     Render.Export.Preamble.make publicationData
         rawBlockNames
         expressionNames
-        ++ frontMatter currentTime publicationData ast
+        ++ frontMatter publicationData ast
         ++ setTheFirstSection
         ++ tableofcontents properties rawBlockNames
         ++ "\n\n"
@@ -95,8 +173,8 @@ export currentTime publicationData settings_ ast =
         ++ "\n\n\\end{document}\n"
 
 
-frontMatter : Time.Posix -> PublicationData -> Forest ExpressionBlock -> String
-frontMatter currentTime publicationData ast =
+frontMatter : Render.Types.PublicationData -> Forest ExpressionBlock -> String
+frontMatter publicationData ast =
     let
         dict =
             ASTTools.frontMatterDict ast
@@ -120,7 +198,12 @@ frontMatter currentTime publicationData ast =
             "\\title{" ++ publicationData.title ++ "}"
 
         date =
-            Dict.get "date" dict |> Maybe.map (\date_ -> "\\date{" ++ date_ ++ "}") |> Maybe.withDefault ""
+            case publicationData.date of
+                Left _ ->
+                    ""
+
+                Right str ->
+                    "\\date{" ++ str ++ "}"
     in
     "\\begin{document}"
         :: title
@@ -738,7 +821,7 @@ exportBlock mathMacroDict settings block =
                                         |> List.filter (\line -> String.left 2 line /= "$$")
                                         |> String.join "\n"
                                         |> ETeX.Transform.transformETeX mathMacroDict
-                                        |> MicroLaTeX.Util.transformLabel
+                                        |> MiniLaTeX.Util.transformLabel
                             in
                             -- TODO: This should be fixed upstream
                             [ "$$", fix_ str, "$$" ] |> String.join "\n"
@@ -777,13 +860,20 @@ exportBlock mathMacroDict settings block =
                                 maybeLabel : Maybe String
                                 maybeLabel =
                                     Dict.get "label" block.properties |> Maybe.map (\l -> "\\label{" ++ String.trim l ++ "}")
-                            in
-                            case maybeLabel of
-                                Nothing ->
-                                    [ "\\begin{equation}", str |> ETeX.Transform.transformETeX mathMacroDict |> MicroLaTeX.Util.transformLabel, "\\end{equation}" ] |> String.join "\n"
 
-                                Just label ->
-                                    [ "\\begin{equation}", label, str |> ETeX.Transform.transformETeX mathMacroDict |> MicroLaTeX.Util.transformLabel, "\\end{equation}" ] |> String.join "\n"
+                                isAlignedBlock =
+                                    String.contains "&" str
+                            in
+                            if isAlignedBlock then
+                                processAlignedBlock block str mathMacroDict
+
+                            else
+                                case maybeLabel of
+                                    Nothing ->
+                                        [ "\\begin{equation}", str |> ETeX.Transform.transformETeX mathMacroDict |> MiniLaTeX.Util.transformLabel, "\\end{equation}" ] |> String.join "\n"
+
+                                    Just label ->
+                                        [ "\\begin{equation}", label, str |> ETeX.Transform.transformETeX mathMacroDict |> MiniLaTeX.Util.transformLabel, "\\end{equation}" ] |> String.join "\n"
 
                         "aligned" ->
                             -- TODO: equation numbers and label
@@ -809,7 +899,7 @@ exportBlock mathMacroDict settings block =
                                         |> List.filter (\line -> not (String.isEmpty line))
                                         |> List.map stripTrailingBackslashes
                                         |> List.map (ETeX.Transform.transformETeX mathMacroDict)
-                                        |> List.map MicroLaTeX.Util.transformLabel
+                                        |> List.map MiniLaTeX.Util.transformLabel
 
                                 -- Add \\ to the end of all lines except the last
                                 processedLines =
@@ -923,6 +1013,51 @@ addTikzPictureClosing flagUp str =
 
     else
         str
+
+
+processAlignedBlock : { a | properties : Dict String String } -> String -> ETeX.MathMacros.MathMacroDict -> String
+processAlignedBlock block str mathMacroDict =
+    let
+        maybeLabel : Maybe String
+        maybeLabel =
+            Dict.get "label" block.properties |> Maybe.map (\l -> "\\label{" ++ String.trim l ++ "}")
+
+        -- Strip trailing \\ from a line if present
+        stripTrailingBackslashes : String -> String
+        stripTrailingBackslashes line =
+            if String.endsWith "\\\\" line then
+                String.dropRight 2 line |> String.trimRight
+
+            else
+                line
+
+        -- Process each line separately and add \\ line breaks
+        lines =
+            str
+                |> String.lines
+                |> List.map String.trim
+                |> List.filter (\line -> not (String.isEmpty line))
+                |> List.map stripTrailingBackslashes
+                |> List.map (ETeX.Transform.transformETeX mathMacroDict)
+                |> List.map MiniLaTeX.Util.transformLabel
+
+        -- Add \\ to the end of all lines except the last
+        processedLines =
+            case List.reverse lines of
+                [] ->
+                    ""
+
+                lastLine :: restReversed ->
+                    (List.reverse restReversed |> List.map (\line -> line ++ "\\\\"))
+                        ++ [ lastLine ]
+                        |> String.join "\n"
+    in
+    case maybeLabel of
+        Nothing ->
+            [ "\\begin{align}", processedLines, "\\end{align}" ] |> String.join "\n"
+
+        Just label ->
+            [ "\\begin{align}", label, processedLines, "\\end{align}" ] |> String.join "\n"
 
 
 commentBlankLine : String -> String
@@ -1226,7 +1361,7 @@ chapter _ _ body =
         tag =
             body
                 |> String.words
-                |> MicroLaTeX.Util.normalizedWord
+                |> MiniLaTeX.Util.normalizedWord
 
         label =
             " \\label{" ++ tag ++ "}"
@@ -1246,7 +1381,7 @@ section settings args body =
         tag =
             body
                 |> String.words
-                |> MicroLaTeX.Util.normalizedWord
+                |> MiniLaTeX.Util.normalizedWord
 
         label =
             " \\label{" ++ tag ++ "}"
@@ -1318,7 +1453,7 @@ section2 args body =
         tag =
             body
                 |> String.words
-                |> MicroLaTeX.Util.normalizedWord
+                |> MiniLaTeX.Util.normalizedWord
 
         label =
             " \\label{" ++ tag ++ "}"
@@ -1373,12 +1508,45 @@ exportExprList mathMacroDict settings exprs =
     List.map (exportExpr mathMacroDict settings) exprs |> String.join "" |> mapChars1
 
 
-{-| -}
+{-| Export an expression to LaTeX. Handles both Fun and VFun variants.
+
+For [math ...], [m ...], [chem ...], [code ...] expressions (parsed as Fun),
+extract the text content and render as LaTeX math mode, matching the behavior
+of $...$ expressions (parsed as VFun).
+
+-}
 exportExpr : ETeX.MathMacros.MathMacroDict -> RenderSettings -> Expression -> String
 exportExpr mathMacroDict settings expr =
     case expr of
         Fun name exps_ _ ->
-            if name == "lambda" then
+            -- Handle verbatim-like functions: [math x^2] should export like $x^2$
+            if List.member name [ "chem", "math", "m", "code" ] then
+                let
+                    arg =
+                        case exps_ of
+                            [ Text str _ ] ->
+                                str
+
+                            _ ->
+                                "Invalid argument to " ++ name
+                in
+                case name of
+                    "math" ->
+                        "\\(" ++ ETeX.Transform.transformETeX mathMacroDict arg ++ "\\)"
+
+                    "m" ->
+                        "\\(" ++ ETeX.Transform.transformETeX mathMacroDict arg ++ "\\)"
+
+                    "chem" ->
+                        "\\(\\ce{" ++ arg ++ "}\\)"
+
+                    "code" ->
+                        "[code " ++ arg ++ "]"
+
+                    _ ->
+                        "Invalid " ++ name ++ " in [" ++ name ++ " " ++ arg ++ "]"
+
+            else if name == "lambda" then
                 case Generic.TextMacro.extract expr of
                     Just lambda ->
                         Generic.TextMacro.toString (exportExpr mathMacroDict settings) lambda
@@ -1406,9 +1574,13 @@ exportExpr mathMacroDict settings expr =
             mapChars2 str
 
         VFun name body _ ->
-            renderVerbatim mathMacroDict name body
+            if name == "math" then
+                "\\(" ++ ETeX.Transform.transformETeX mathMacroDict body ++ "\\)"
 
-        ExprList itemExprs _ ->
+            else
+                renderVerbatim mathMacroDict name body
+
+        ExprList _ itemExprs _ ->
             -- Export the list of expressions
             exportExprList mathMacroDict settings itemExprs
 
@@ -1449,10 +1621,10 @@ renderVerbatim mathMacroDict name body =
 
         Just f ->
             if List.member name [ "equation", "aligned", "math" ] then
-                body |> MicroLaTeX.Util.transformLabel |> ETeX.Transform.transformETeX mathMacroDict |> f
+                body |> MiniLaTeX.Util.transformLabel |> ETeX.Transform.transformETeX mathMacroDict |> f
 
             else
-                body |> fixChars |> MicroLaTeX.Util.transformLabel |> f
+                body |> fixChars |> MiniLaTeX.Util.transformLabel |> f
 
 
 

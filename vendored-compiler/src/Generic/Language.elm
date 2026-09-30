@@ -29,6 +29,7 @@ module Generic.Language exposing
     , getVerbatimContent
     , prefixIdInBlockMeta
     , primitiveBlockEmpty
+    , printBlock
     , setName
     , simplifyBlock
     , simplifyExpr
@@ -53,7 +54,7 @@ type Expr metaData
     = Text String metaData
     | Fun String (List (Expr metaData)) metaData
     | VFun String String metaData
-    | ExprList (List (Expr metaData)) metaData
+    | ExprList Int (List (Expr metaData)) metaData -- the Int parameter is the indentation of the expression list in the source
 
 
 extractText : Expr metaData -> Maybe ( String, metaData )
@@ -92,6 +93,147 @@ type alias Block content blockMetaData =
     , meta : blockMetaData
     , style : Maybe Style
     }
+
+
+printBlock : ExpressionBlock -> String
+printBlock block =
+    case block.heading of
+        Paragraph ->
+            case block.body of
+                Left str ->
+                    "YOU SHOULDN'T SEE THIS"
+
+                Right exprList ->
+                    List.map renderExpression exprList |> String.join " " |> compressSpaces
+
+        Ordinary name ->
+            printOrdinaryBlock name block
+
+        Verbatim name ->
+            printVerbatimBlock name block
+
+
+printOrdinaryBlock name block =
+    let
+        content =
+            case block.body of
+                Left str ->
+                    str
+
+                Right exprList ->
+                    List.map renderExpression exprList |> String.join " " |> compressSpaces
+    in
+    case name of
+        "numbered" ->
+            ". " ++ String.trim content
+
+        "item" ->
+            "- " ++ String.trim content
+
+        "section" ->
+            let
+                level =
+                    Maybe.andThen String.toInt (List.head block.args)
+                        |> Maybe.withDefault 1
+
+                prefix =
+                    String.repeat level "#"
+            in
+            prefix ++ " " ++ String.trim content
+
+        "itemList" ->
+            case block.body of
+                Left str ->
+                    str
+
+                Right exprList ->
+                    let
+                        indentation expr =
+                            case expr of
+                                ExprList n _ _ ->
+                                    n
+
+                                _ ->
+                                    0
+                    in
+                    List.map (\expr -> ( indentation expr, renderExpression expr ) |> (\( n, str ) -> String.repeat n " " ++ "- " ++ str)) exprList |> String.join "\n"
+
+        "numberedList" ->
+            case block.body of
+                Left str ->
+                    str
+
+                Right exprList ->
+                    let
+                        indentation expr =
+                            case expr of
+                                ExprList n _ _ ->
+                                    n
+
+                                _ ->
+                                    0
+                    in
+                    List.map (\expr -> ( indentation expr, renderExpression expr ) |> (\( n, str ) -> String.repeat n " " ++ ". " ++ str)) exprList |> String.join "\n"
+
+        _ ->
+            ([ "|", name ] ++ block.args ++ dictToList block.properties |> String.join " ") ++ "\n" ++ content
+
+
+renderExpression : Expression -> String
+renderExpression expr =
+    case expr of
+        Text str _ ->
+            str
+
+        Fun fName exprList _ ->
+            ("[" ++ fName ++ " ") ++ (List.map renderExpression exprList |> String.join "") ++ "]"
+
+        VFun fName body _ ->
+            case fName of
+                "math" ->
+                    "[m " ++ body ++ "]"
+
+                _ ->
+                    [ "[" ++ fName, body, "]" ] |> String.join " " |> compressSpaces
+
+        ExprList _ exprList _ ->
+            List.map (renderExpression >> (\str -> str)) exprList |> String.join " " |> compressSpaces
+
+
+compressSpaces : String -> String
+compressSpaces str =
+    str |> String.words |> String.join " "
+
+
+printVerbatimBlock : String -> ExpressionBlock -> String
+printVerbatimBlock name block =
+    let
+        content =
+            case block.body of
+                Left str ->
+                    str
+
+                Right _ ->
+                    ""
+
+        block_args =
+            case Dict.get "label" block.properties of
+                Nothing ->
+                    block.args
+
+                Just _ ->
+                    List.filter (\arg -> arg /= "numbered") block.args
+    in
+    ([ "|", name ] ++ block_args ++ dictToList block.properties |> String.join " ") ++ "\n" ++ content
+
+
+dictToList : Dict String String -> List String
+dictToList dict =
+    dict
+        |> Dict.remove "id"
+        |> Dict.remove "outerId"
+        |> Dict.toList
+        |> List.map (\( key, value ) -> key ++ ":" ++ value)
 
 
 type alias Style =
@@ -196,7 +338,7 @@ getMeta expr =
         Text _ meta ->
             meta
 
-        ExprList _ meta ->
+        ExprList _ _ meta ->
             meta
 
 
@@ -212,8 +354,8 @@ setMeta meta expr =
         Text text _ ->
             Text text meta
 
-        ExprList eList _ ->
-            ExprList eList meta
+        ExprList n eList _ ->
+            ExprList n eList meta
 
 
 {-|
@@ -325,7 +467,7 @@ simplifyExpr expr =
         Text text _ ->
             Text text ()
 
-        ExprList eList _ ->
+        ExprList _ eList _ ->
             --ExprList eList ()
             Text "text" ()
 
@@ -474,5 +616,5 @@ getFunctionName expression =
         Text _ _ ->
             Nothing
 
-        ExprList _ _ ->
+        ExprList _ _ _ ->
             Nothing

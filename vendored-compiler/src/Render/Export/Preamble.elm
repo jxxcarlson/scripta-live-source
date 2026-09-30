@@ -3,25 +3,35 @@ module Render.Export.Preamble exposing (Publication, make, supportingCode)
 -- PREAMBLE
 
 import List.Extra
+import Render.Types
 
 
 type alias Publication =
     { title : String
     , authorList : List String
     , kind : String
+    , date : String
     }
 
 
-make : Publication -> List String -> List String -> String
-make publication =
-    if publication.kind == "Book" then
-        makeBook
 
-    else
-        makeArticle
+-- make : Publication -> List String -> List String -> String
 
 
-makeBook : List String -> List String -> String
+make : Render.Types.PublicationData -> List String -> List String -> String
+make publicationData =
+    case publicationData.kind of
+        Render.Types.DKBook ->
+            makeBook
+
+        _ ->
+            makeArticle
+
+
+
+-- makeBook : List String -> List String -> String
+
+
 makeBook blockNames_ expressionNames_ =
     let
         names =

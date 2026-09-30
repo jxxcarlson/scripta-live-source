@@ -32,7 +32,7 @@ toExpressionBlock_ parse primitiveBlock =
             Paragraph ->
                 Right (String.join "\n" primitiveBlock.body |> parse)
 
-            Ordinary "itemList" ->
+            Ordinary "itemList_" ->
                 let
                     items : List String
                     items =
@@ -43,21 +43,53 @@ toExpressionBlock_ parse primitiveBlock =
                     content_ =
                         List.map parse items
                 in
-                Right (List.map (\list -> ExprList list Generic.Language.emptyExprMeta) content_)
+                Right (List.map (\list -> ExprList 0 list Generic.Language.emptyExprMeta) content_)
 
+            -- Nested itemized lists: parse indentation to support proper nesting
+            Ordinary "itemList" ->
+                let
+                    extractIndentAndContent : String -> ( Int, String )
+                    extractIndentAndContent str =
+                        ( numberOfLeadingSpaces str, String.trimLeft str |> String.replace "- " "" )
+
+                    numberOfLeadingSpaces : String -> Int
+                    numberOfLeadingSpaces str =
+                        String.length str - String.length (String.trimLeft str)
+
+                    items : List ( Int, String )
+                    items =
+                        String.split "\n" primitiveBlock.meta.sourceText
+                            |> List.map extractIndentAndContent
+
+                    content_ : List ( Int, List Expression )
+                    content_ =
+                        List.map (\( indent, str ) -> ( indent, parse str )) items
+                in
+                -- Store indentation in ExprList's Int parameter for rendering
+                Right (List.map (\( indent, exprList ) -> ExprList indent exprList Generic.Language.emptyExprMeta) content_)
+
+            -- Nested numbered lists: parse indentation to support proper nesting
             Ordinary "numberedList" ->
                 let
-                    items : List String
-                    items =
-                        (primitiveBlock.firstLine :: primitiveBlock.body)
-                            |> fixNumberedItems
+                    extractIndentAndContent : String -> ( Int, String )
+                    extractIndentAndContent str =
+                        ( numberOfLeadingSpaces str, String.trimLeft str |> String.replace ". " "" )
 
-                    -- Generic.Language.getMeta block)
-                    content_ : List (List Expression)
+                    numberOfLeadingSpaces : String -> Int
+                    numberOfLeadingSpaces str =
+                        String.length str - String.length (String.trimLeft str)
+
+                    items : List ( Int, String )
+                    items =
+                        String.split "\n" primitiveBlock.meta.sourceText
+                            |> List.map extractIndentAndContent
+
+                    content_ : List ( Int, List Expression )
                     content_ =
-                        List.map (Scripta.Expression.parse 0) items
+                        List.map (\( indent, str ) -> ( indent, parse str )) items
                 in
-                Right (List.map (\list -> ExprList list Generic.Language.emptyExprMeta) content_)
+                -- Store indentation in ExprList's Int parameter for rendering
+                Right (List.map (\( indent, exprList ) -> ExprList indent exprList Generic.Language.emptyExprMeta) content_)
 
             Ordinary _ ->
                 Right (String.join "\n" primitiveBlock.body |> parse)

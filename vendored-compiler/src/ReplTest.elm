@@ -3,11 +3,12 @@ module ReplTest exposing (..)
 import Generic.Forest
 import Generic.Language
 import Generic.Pipeline
+import MiniLaTeX.PrimitiveBlock
+import Render.Settings
 import Scripta.Expression
 import Scripta.PrimitiveBlock
-import MicroLaTeX.PrimitiveBlock
-import Render.Settings
 import ScriptaV2.Compiler
+import ScriptaV2.Types exposing (defaultCompilerParameters)
 
 
 p : String -> List Generic.Language.PrimitiveBlock
@@ -17,7 +18,7 @@ p str =
 
 pL : String -> List Generic.Language.PrimitiveBlock
 pL str =
-    MicroLaTeX.PrimitiveBlock.parse "0" 0 (String.lines str)
+    MiniLaTeX.PrimitiveBlock.parse "0" 0 (String.lines str)
 
 
 q : String -> List Generic.Language.ExpressionBlock
@@ -37,7 +38,7 @@ t str =
 
 dfrs : Render.Settings.RenderSettings
 dfrs =
-    Render.Settings.defaultRenderSettings Render.Settings.defaultDisplaySettings
+    Render.Settings.defaultRenderSettings defaultCompilerParameters
 
 
 expressionBlockFromPrimitiveBlock : Generic.Language.PrimitiveBlock -> Generic.Language.ExpressionBlock
@@ -47,9 +48,9 @@ expressionBlockFromPrimitiveBlock =
 
 t1 =
     """
-| image caption:Entropy
-https://upload.wikimedia.org/wikipedia/commons/3/3d/Entropy_diagram.png
-
+- One
+- Two
+- Three
 """
 
 
@@ -76,6 +77,51 @@ t3 =
 
 \\end{enumerate}
 
+"""
+
+
+cl1 =
+    """
+- One
+- Two
+- Three
+"""
+
+
+cl2 =
+    """
+. One
+. Two
+. Three
+"""
+
+
+eq1 =
+    "| equation\na^2 + b^2 + c^2"
+
+
+eq2 =
+    """
+| equation
+a^2 + b^2 = c^2
+"""
+
+
+eq3 =
+    """
+| equation
+u &= a + b \\
+v &= a - b \\
+uv &= a^2 - b^2
+"""
+
+
+al =
+    """
+| aligned
+u &= a + b \\
+v &= a - b \\
+uv &= a^2 - b^2
 """
 
 

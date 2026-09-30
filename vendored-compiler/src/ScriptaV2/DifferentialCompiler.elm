@@ -1,4 +1,7 @@
-module ScriptaV2.DifferentialCompiler exposing (EditRecord, init, update, messagesFromForest, editRecordToCompilerOutput)
+module ScriptaV2.DifferentialCompiler exposing
+    ( EditRecord, init, update, messagesFromForest, editRecordToCompilerOutput
+    , AccInitialData
+    )
 
 {-|
 
@@ -28,15 +31,15 @@ import Generic.Language exposing (ExpressionBlock, PrimitiveBlock)
 import Generic.Pipeline
 import Generic.PrimitiveBlock
 import Library.Tree
-import Scripta.Expression
-import Scripta.PrimitiveBlock
-import MicroLaTeX.Expression
-import MicroLaTeX.PrimitiveBlock
+import MiniLaTeX.Expression
+import MiniLaTeX.PrimitiveBlock
 import Render.Block
 import Render.Settings
 import Render.TOCTree
 import Render.Theme
 import RoseTree.Tree as Tree exposing (Tree)
+import Scripta.Expression
+import Scripta.PrimitiveBlock
 import ScriptaV2.Compiler
 import ScriptaV2.Config
 import ScriptaV2.Language exposing (Language(..))
@@ -53,7 +56,7 @@ import XMarkdown.PrimitiveBlock
 
 pp : String -> List ExpressionBlock
 pp str =
-    Scripta.PrimitiveBlock.parse "!!" 0 (String.lines str) |> List.map (toExprBlock ScriptaV2.Language.ScriptaLang)
+    Scripta.PrimitiveBlock.parse ScriptaV2.Config.idPrefix 0 (String.lines str) |> List.map (toExprBlock ScriptaV2.Language.ScriptaLang)
 
 
 {-| -}
@@ -99,12 +102,26 @@ editRecordToCompilerOutput params editRecord =
             Generic.ASTTools.getBlockByName "title" editRecord.tree
 
         properties =
-            Maybe.map .properties titleData |> Maybe.withDefault Dict.empty
+            Maybe.map .properties titleData
+                |> Maybe.withDefault Dict.empty
+                |> Dict.insert "number-to-level" (String.fromInt params.numberToLevel)
 
-        -- TODO: this is a hack to get the title to render correctly
+        chapterNumber : String
+        chapterNumber =
+            case editRecord.accumulator.headingIndex |> .content >> List.head of
+                Nothing ->
+                    ""
+
+                Just k ->
+                    if k == 0 then
+                        ""
+
+                    else
+                        String.fromInt k ++ ". "
+
         title : Element MarkupMsg
         title =
-            Element.paragraph [ Element.paddingEach { left = 0, right = 0, top = 0, bottom = 36 } ] [ Element.text <| Generic.ASTTools.title editRecord.tree ]
+            Element.paragraph [] [ Element.text <| chapterNumber ++ Generic.ASTTools.title editRecord.tree ]
     in
     { body =
         ScriptaV2.Compiler.renderForest params { renderSettings | properties = properties } editRecord.accumulator (ScriptaV2.Compiler.filterForest2 editRecord.tree)
@@ -123,27 +140,23 @@ type alias ExpBlockData =
     { name : Maybe String, args : List String, properties : Dict String String, indent : Int, lineNumber : Int, numberOfLines : Int, id : String, tag : String, content : Either String (List Generic.Language.Expression), messages : List String, sourceText : String }
 
 
+type alias AccInitialData =
+    { language : Language, mathMacros : String, textMacros : String, vectorSize : Int, shiftAndSetCounter : Maybe Int }
+
+
 {-| -}
-init : Dict String String -> Language -> String -> EditRecord
-init inclusionData lang str =
+init : Maybe Int -> Dict String String -> Language -> String -> EditRecord
+init shiftAndSetCounter_ inclusionData lang str =
     let
-        initialData : { language : Language, mathMacros : String, textMacros : String, vectorSize : number }
+        initialData : AccInitialData
         initialData =
-            makeInitialData inclusionData lang
+            makeInitialData shiftAndSetCounter_ inclusionData lang
     in
     Differential.AbstractDifferentialParser.init (updateFunctions lang) initialData (str ++ "\n")
 
 
-default lang =
-    { mathMacros = ""
-    , textMacros = ""
-    , vectorSize = 4
-    , language = lang
-    }
-
-
-makeInitialData : Dict String String -> Language -> { language : Language, mathMacros : String, textMacros : String, vectorSize : number }
-makeInitialData filesToIncludeDict lang =
+makeInitialData : Maybe Int -> Dict String String -> Language -> AccInitialData
+makeInitialData shiftAndSetCounter_ filesToIncludeDict lang =
     let
         keys =
             Dict.keys filesToIncludeDict
@@ -162,7 +175,6 @@ makeInitialData filesToIncludeDict lang =
                         , textmacros = Differential.Utility.getKeyedParagraph "|| textmacros" macroText_ |> Maybe.withDefault ""
                         }
 
-        -- foldl : (a -> b -> b) -> b -> List a -> b
         folder new acc =
             { mathmacros = new.mathmacros ++ "\n" ++ acc.mathmacros, textmacros = new.textmacros ++ "\n" ++ acc.textmacros }
 
@@ -185,6 +197,7 @@ makeInitialData filesToIncludeDict lang =
     , mathMacros = macroTexts.mathmacros
     , textMacros = macroTexts.textmacros
     , vectorSize = 4
+    , shiftAndSetCounter = shiftAndSetCounter_
     }
 
 
@@ -296,16 +309,27 @@ getMessages_ blocks =
 
 
 {-| -}
-update : EditRecord -> String -> EditRecord
-update editRecord text =
-    Differential.AbstractDifferentialParser.update (updateFunctions editRecord.lang) (text ++ "\n") editRecord
+update : Maybe Int -> EditRecord -> String -> EditRecord
+update shiftAndSetCounter_ editRecord text =
+    let
+        -- Update the initialData with the new shiftAndSetCounter
+        oldInitialData =
+            editRecord.initialData
+
+        newInitialData =
+            { oldInitialData | shiftAndSetCounter = shiftAndSetCounter_ }
+
+        updatedEditRecord =
+            { editRecord | initialData = newInitialData }
+    in
+    Differential.AbstractDifferentialParser.update (updateFunctions editRecord.lang) (text ++ "\n") updatedEditRecord
 
 
 chunker : Language -> String -> List PrimitiveBlock
 chunker lang str =
     case lang of
         MiniLaTeXLang ->
-            MicroLaTeX.PrimitiveBlock.parse ScriptaV2.Config.idPrefix 0 (String.lines str)
+            MiniLaTeX.PrimitiveBlock.parse ScriptaV2.Config.idPrefix 0 (String.lines str)
 
         ScriptaLang ->
             Scripta.PrimitiveBlock.parse ScriptaV2.Config.idPrefix 0 (String.lines str)
@@ -322,7 +346,7 @@ toExprBlock : Language -> PrimitiveBlock -> ExpressionBlock
 toExprBlock lang =
     case lang of
         MiniLaTeXLang ->
-            Generic.Pipeline.toExpressionBlock MicroLaTeX.Expression.parse
+            Generic.Pipeline.toExpressionBlock MiniLaTeX.Expression.parse
 
         ScriptaLang ->
             Generic.Pipeline.toExpressionBlock Scripta.Expression.parse

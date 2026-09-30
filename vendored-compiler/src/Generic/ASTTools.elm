@@ -268,6 +268,7 @@ changeName oldName newName block =
 frontMatterDict : List (Tree ExpressionBlock) -> Dict String String
 frontMatterDict ast =
     keyValueDict (getVerbatimBlockValue "docinfo" ast |> String.split "\n" |> fixFrontMatterList)
+        |> Debug.log "@@_FrontMatter"
 
 
 keyValueDict : List String -> Dict String String
@@ -437,7 +438,7 @@ getText expression =
         Fun _ expressions _ ->
             List.map getText expressions |> Maybe.Extra.values |> String.join " " |> Just
 
-        ExprList exprList _ ->
+        ExprList _ exprList _ ->
             Nothing
 
 
@@ -458,7 +459,7 @@ stringValue expr =
         VFun _ str _ ->
             str
 
-        ExprList _ _ ->
+        ExprList _ _ _ ->
             "[ExprList]"
 
 
