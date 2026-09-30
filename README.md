@@ -108,7 +108,7 @@ Key components:
 - `Common.Model` - shared model; `loadSource`, `updateSource` and `refreshOptions` keep the parsed document and rendered output current
 - `ScriptaExport` - LaTeX export and image urls for PDF, using the compiler's internal modules
 - `assets/codemirror-element.js` - the editor, built from `editor-prepare/scripta-editor.js`
-- `assets/editor-sync.js` - editor ↔ rendered-text sync (select rendered text → editor; Ctrl+S in the editor → rendered text; ESC clears)
+- `assets/editor-sync.js` - editor ↔ rendered-text sync (click a word or equation, or select text, in the rendered output → editor; Ctrl+S in the editor → rendered text; ESC clears)
 
 The compiler lives in `vendored-compiler/src/`, a copy of `scripta-compiler-v3` (see `vendored-compiler/VERSION.md` for the commit). LaTeX import uses `vendored-converter/latex/`.
 

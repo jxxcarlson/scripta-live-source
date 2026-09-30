@@ -3,7 +3,8 @@
 // Call setupEditorSync(app) after Elm.<Main>.init(...). It wires:
 //   - Elm ports scrollToElement (TOC, footnote, citation clicks) and
 //     selectInEditor (PDF error lines) when the program uses them
-//   - selecting text in the rendered output -> highlight it in the editor
+//   - clicking a word (or math) in the rendered output, or selecting rendered
+//     text -> highlight the source in the editor
 //   - Ctrl+S on an editor selection -> highlight the matching rendered element
 //   - ESC -> clear highlights and restore the rendered-text scroll position
 //
@@ -119,42 +120,151 @@
     }
   });
 
-  // Selecting text in the rendered output highlights the source in the editor.
+  // data-begin is not always measured from the start of the source line
+  // (list items, headings and elements like [i ...] measure from after
+  // their prefix), so the computed position is only an estimate. Find the
+  // rendered text in the source near the estimate: [from, to) or null.
+  const SEARCH_WINDOW = 400;
+
+  function findNear(src, estimate, text, minIndex) {
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+    // Whitespace in rendered text may be a newline or several spaces in the source
+    const pattern = trimmed
+      .split(/\s+/)
+      .map(function (w) { return w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); })
+      .join('\\s+');
+    const lo = Math.max(minIndex || 0, estimate - SEARCH_WINDOW);
+    const hi = Math.min(src.length, estimate + SEARCH_WINDOW + trimmed.length);
+    const re = new RegExp(pattern, 'g');
+    const region = src.slice(lo, hi);
+    let best = null;
+    let m;
+    while ((m = re.exec(region)) !== null) {
+      const from = lo + m.index;
+      if (best === null || Math.abs(from - estimate) < Math.abs(best.from - estimate)) {
+        best = { from: from, to: from + m[0].length };
+      }
+      if (m[0].length === 0) re.lastIndex++;
+    }
+    return best;
+  }
+
+  // Source range of rendered text, using the estimate to pick the right
+  // occurrence. A selection that crosses markup (e.g. "Hello [b world]")
+  // does not occur verbatim, so match its first and last words separately.
+  function locateText(src, estimate, text) {
+    const exact = findNear(src, estimate, text);
+    if (exact) return exact;
+    const words = text.trim().split(/\s+/);
+    if (words.length < 2) return null;
+    const head = findNear(src, estimate, words.slice(0, 2).join(' ')) || findNear(src, estimate, words[0]);
+    if (!head) return null;
+    const tailText = words.slice(-2).join(' ');
+    const tail = findNear(src, head.from + text.length, tailText, head.from) ||
+      findNear(src, head.from + text.length, words[words.length - 1], head.from);
+    return tail && tail.to > head.from ? { from: head.from, to: tail.to } : head;
+  }
+
+  function positionElement(node, output) {
+    let el = node && node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+    while (el && el !== output) {
+      if (el.hasAttribute && el.hasAttribute('data-begin') && lineOfId(el.id) !== null) return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  // Enclosing block element (display math, images, list items, ...). Its
+  // data-begin/data-end are absolute offsets into the source, end inclusive.
+  function blockElement(node, output) {
+    let el = node && node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+    while (el && el !== output) {
+      if (el.hasAttribute && el.hasAttribute('data-lines') && el.hasAttribute('data-begin')) return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  // Estimated source position of offset within node, or null.
+  function estimatePosition(doc, node, offset, output) {
+    const el = positionElement(node, output);
+    if (el) {
+      const line = lineOfId(el.id);
+      if (line <= doc.lines) {
+        return absolutePosition(doc, line, parseInt(el.getAttribute('data-begin'), 10) + offset);
+      }
+    }
+    const block = blockElement(node, output);
+    return block ? parseInt(block.getAttribute('data-begin'), 10) : null;
+  }
+
+  // The word around offset in a text node: { text, offset } or null.
+  function wordAt(node, offset) {
+    if (!node || node.nodeType !== Node.TEXT_NODE) return null;
+    const s = node.textContent;
+    let a = Math.min(offset, s.length);
+    let b = a;
+    while (a > 0 && /\S/.test(s[a - 1])) a--;
+    while (b < s.length && /\S/.test(s[b])) b++;
+    const word = s.slice(a, b).replace(/^[^\w\\$]+|[^\w}$]+$/g, '');
+    if (!word) return null;
+    return { text: word, offset: a + s.slice(a, b).indexOf(word) };
+  }
+
+  // Click or selection in the rendered output highlights the source in the editor.
   document.addEventListener('mouseup', function (e) {
     const output = renderedOutput();
     if (!output || !output.contains(e.target)) return;
-
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
-    const range = selection.getRangeAt(0);
-
-    function positionElement(node) {
-      let el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
-      while (el && el !== output) {
-        if (el.hasAttribute && el.hasAttribute('data-begin') && lineOfId(el.id) !== null) return el;
-        el = el.parentElement;
-      }
-      return null;
-    }
-
-    const startEl = positionElement(range.startContainer);
-    const endEl = positionElement(range.endContainer);
-    if (!startEl || !endEl) return;
-
-    const startBegin = parseInt(startEl.getAttribute('data-begin'), 10);
-    const endBegin = parseInt(endEl.getAttribute('data-begin'), 10);
-    if (isNaN(startBegin) || isNaN(endBegin)) return;
-
     const editorEl = editorElement();
     if (!editorEl) return;
     const doc = editorEl.editor.state.doc;
-    const startLine = lineOfId(startEl.id);
-    const endLine = lineOfId(endEl.id);
-    if (startLine > doc.lines || endLine > doc.lines) return;
+    const src = doc.toString();
 
-    const from = absolutePosition(doc, startLine, startBegin + range.startOffset);
-    const to = absolutePosition(doc, endLine, endBegin + range.endOffset);
-    highlightInEditor(editorEl, from, to);
+    const selection = window.getSelection();
+    const hasSelection = selection && !selection.isCollapsed && selection.rangeCount > 0;
+
+    if (hasSelection) {
+      const range = selection.getRangeAt(0);
+      const estimate = estimatePosition(doc, range.startContainer, range.startOffset, output);
+      if (estimate === null) return;
+      const found = locateText(src, estimate, selection.toString());
+      if (found) highlightInEditor(editorEl, found.from, found.to);
+      return;
+    }
+
+    // Plain click. Links (footnotes, citations, references) are handled by Elm.
+    if (e.target.closest && e.target.closest('a')) return;
+
+    // The word under the pointer, or the whole element (e.g. math)
+    let node = null;
+    let offset = 0;
+    if (document.caretRangeFromPoint) {
+      const caret = document.caretRangeFromPoint(e.clientX, e.clientY);
+      if (caret) { node = caret.startContainer; offset = caret.startOffset; }
+    }
+    const target = node && output.contains(node) ? node : e.target;
+    const word = wordAt(node, offset);
+    if (word) {
+      const estimate = estimatePosition(doc, node, word.offset, output);
+      const found = estimate === null ? null : findNear(src, estimate, word.text);
+      if (found) { highlightInEditor(editorEl, found.from, found.to); return; }
+    }
+    // No word under the pointer (math, images): highlight the source of the
+    // innermost positioned element, an expression (e.g. inline math) or a
+    // block (e.g. display math)
+    const el = positionElement(target, output);
+    const block = blockElement(target, output);
+    if (el && (!block || block.contains(el))) {
+      const line = lineOfId(el.id);
+      const begin = parseInt(el.getAttribute('data-begin'), 10);
+      const end = parseInt(el.getAttribute('data-end'), 10);
+      if (line <= doc.lines && !isNaN(begin) && !isNaN(end)) {
+        highlightInEditor(editorEl, absolutePosition(doc, line, begin), absolutePosition(doc, line, end + 1));
+      }
+    } else if (block) {
+      highlightInEditor(editorEl, parseInt(block.getAttribute('data-begin'), 10), parseInt(block.getAttribute('data-end'), 10));
+    }
   });
 
   // Ctrl+S in the editor (emitted by codemirror-element.js): highlight the

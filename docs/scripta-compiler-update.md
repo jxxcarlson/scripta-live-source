@@ -60,13 +60,15 @@ On 2026-09-30 Scripta Live moved from a vendored copy of `scripta-compiler-v2` t
   - Its source is `editor-prepare/scripta-editor.js`, copied from `scripta-compiler-v3/Demo/codemirror-element.js`. It is bundled locally with `npx rollup -c rollup.scripta.config.mjs` into `assets/codemirror-element.js`, so no CDN is needed and the Tauri build works offline.
   - One local change: a document load puts the cursor at the top. Without it, the editor could open scrolled part-way down.
 - **Sync:** `assets/editor-sync.js` is adapted from the Demo's `index.html`. All three HTML hosts load it and call `setupEditorSync(app)`.
-  - Selecting text in the rendered output highlights the source in the editor.
+  - Clicking a word in the rendered output highlights that word in the editor. Clicking math highlights its source: `$…$` for inline math, the whole block for display math.
+  - Selecting text in the rendered output highlights the source in the editor, including selections that cross markup such as `Hello [b world]`.
+  - `data-begin` is not always measured from the start of the source line: list items, headings and elements like `[i …]` measure from after their prefix. So the computed position is only an estimate, and the rendered text is then looked up in the source near it. Block elements (display math, images, list items) carry absolute `data-begin`/`data-end` offsets.
   - Ctrl+S on an editor selection highlights the matching rendered element.
   - ESC clears highlights and restores the scroll position.
   - TOC, footnote and citation clicks scroll the rendered text, using the new `scrollToElement` port.
   - PDF-error clicks go to the editor line, using the new `selectInEditor` port.
   - v3 element ids (`e-<line>.<n>`) use 0-based lines, which are converted to CodeMirror's 1-based lines.
-  - Plain clicks on rendered text no longer move the editor, because v3 emits no event for them.
+  - v3 emits no event for a plain click on rendered text, so click sync is handled entirely in JS. Clicks on links (footnotes, citations, references) are left to Elm.
 - **Math:** `assets/katex.js` now re-renders `math-text` when its `content` or `display` changes, because v3 reuses math nodes across edits.
 - **Caching:** `server.py` sends `Cache-Control: no-cache`, and the HTML hosts version the changed scripts (`?v=v3`). Without this, browsers kept the old editor bundle and showed an empty editor.
 
