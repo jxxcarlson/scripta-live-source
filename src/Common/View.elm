@@ -277,13 +277,8 @@ tocPanel renderMsg model =
                 ]
 
              else
-                Element.el
-                    [ Font.bold
-                    , Font.size 14
-                    , Element.paddingEach { top = 0, bottom = 8, left = 0, right = 0 }
-                    ]
-                    (Element.text "Contents")
-                    :: tocItems
+                -- v3's TOC includes its own "Contents" heading
+                tocItems
             )
 
 
@@ -526,7 +521,15 @@ displayRenderedText renderMsg model =
             , Style.forceColorStyle model.theme
             ]
             [ ( String.fromInt model.count
-              , container model [ Element.html (Html.map renderMsg (Html.div [] model.compilerOutput.body)) ]
+              , container model
+                    [ -- width fill: elm-ui would otherwise size the html to its widest child
+                      Element.el [ width fill ]
+                        (Element.html
+                            (Html.map renderMsg
+                                (Html.div [ Html.Attributes.style "width" "100%" ] model.compilerOutput.body)
+                            )
+                        )
+                    ]
               )
             ]
         )

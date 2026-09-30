@@ -32,30 +32,52 @@ function initKatex() {
 
   console.log("elm-katex: initializing");
 
+  // v3 keeps math-text nodes across edits and updates their `content` and
+  // `display` properties, so render on property changes, not only on connect.
   class MathText extends HTMLElement {
 
-     constructor() {
-         // Always call super first in constructor
-         super();
-       }
+    constructor() {
+      super();
+      this.attachShadow({mode: "open"});
+    }
 
     connectedCallback() {
-      this.attachShadow({mode: "open"});
-      
-      // Get properties (not attributes) - Elm sets these as properties
-      const content = this.content || '';
-      const display = this.display || false;
-      
+      // Elm may set properties before the element is upgraded
+      this._upgradeProperty('content');
+      this._upgradeProperty('display');
+      this._render();
+    }
+
+    _upgradeProperty(prop) {
+      if (Object.prototype.hasOwnProperty.call(this, prop)) {
+        let value = this[prop];
+        delete this[prop];
+        this[prop] = value;
+      }
+    }
+
+    set content(val) {
+      this._content = val;
+      if (this.isConnected) this._render();
+    }
+    get content() { return this._content; }
+
+    set display(val) {
+      this._display = val;
+      if (this.isConnected) this._render();
+    }
+    get display() { return this._display; }
+
+    _render() {
       this.shadowRoot.innerHTML =
         katex.renderToString(
-          content,
-          { throwOnError: false, displayMode: display }
+          this._content || '',
+          { throwOnError: false, displayMode: this._display || false }
         );
       let link = document.createElement('link');
       link.setAttribute('rel', 'stylesheet');
       link.setAttribute('href', 'https://cdn.jsdelivr.net/npm/katex@0.12.0/dist/katex.min.css');
       this.shadowRoot.appendChild(link);
-
     }
 
   }
