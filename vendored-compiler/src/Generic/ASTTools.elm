@@ -1,105 +1,44 @@
 module Generic.ASTTools exposing
-    ( banner
-    , blockNameInList
-    , blockNames
-    , blockProperties
-    , changeName
-    , existsBlockWithName
-    , exprListToStringList
+    ( exprListToStringList
     , expressionNames
-    , extractTextFromSyntaxTreeByKey
-    , filterBlocks
-    , filterBlocksByArgs
-    , filterBlocksOnName
-    , filterExpressionsOnName
     , filterExpressionsOnName_
     , filterExprs
     , filterForestOnLabelNames
-    , filterNotBlocksOnName
-    , filterOutExpressionsOnName
     , frontMatterDict
     , getBlockArgsByName
     , getBlockByName
-    , getBlocksByName
     , getText
-    , getValue
     , getVerbatimBlockValue
     , isBlank
-    , matchingIdsInAST
-    , normalize
     , rawBlockNames
     , stringValueOfList
-    , tableOfContents
-    , title
-    , titleTOC
-    , toExprRecord
     )
 
-import Bool.Extra
 import Dict exposing (Dict)
 import Either exposing (Either(..))
-import Generic.Forest exposing (Forest)
-import Generic.Language exposing (Expr(..), Expression, ExpressionBlock, Heading(..))
+import Generic.BlockUtilities
 import Library.Tree
 import List.Extra
-import Maybe.Extra
 import RoseTree.Tree as Tree exposing (Tree)
+import V3.Types exposing (Expr(..), Expression, ExpressionBlock, Heading(..))
 
 
-blockProperties : List (Tree ExpressionBlock) -> String -> Dict String String
-blockProperties forest blockName =
-    forest
-        |> getBlockByName blockName
-        |> Maybe.map .properties
-        |> Maybe.withDefault Dict.empty
+getText : Expression -> Maybe String
+getText expression =
+    case expression of
+        Text str _ ->
+            Just str
 
+        VFun _ str _ ->
+            Just (String.replace "`" "" str)
 
-normalize : Either String (List Expression) -> Either String (List Expression)
-normalize exprs =
-    case exprs of
-        Right ((Text _ _) :: rest) ->
-            Right rest
+        Fun _ expressions _ ->
+            List.filterMap getText expressions
+                |> String.join " "
+                |> Just
 
-        _ ->
-            exprs
-
-
-blockNames : List (Tree.Tree ExpressionBlock) -> List String
-blockNames forest =
-    forest
-        |> rawBlockNames
-        |> List.Extra.unique
-        |> List.sort
-
-
-rawBlockNames : List (Tree.Tree ExpressionBlock) -> List String
-rawBlockNames forest =
-    List.map Library.Tree.flatten forest
-        |> List.concat
-        |> List.map Generic.Language.getName
-        |> Maybe.Extra.values
-
-
-expressionNames : List (Tree.Tree ExpressionBlock) -> List String
-expressionNames forest =
-    List.map Library.Tree.flatten forest
-        |> List.concat
-        |> List.map Generic.Language.getExpressionContent
-        |> List.concat
-        |> List.map Generic.Language.getFunctionName
-        |> Maybe.Extra.values
-        |> List.Extra.unique
-        |> List.sort
-
-
-filterExpressionsOnName : String -> List Expression -> List Expression
-filterExpressionsOnName name exprs =
-    List.filter (matchExprOnName name) exprs
-
-
-filterOutExpressionsOnName : String -> List Expression -> List Expression
-filterOutExpressionsOnName name exprs =
-    List.filter (\expr -> not (matchExprOnName name expr)) exprs
+        ExprList _ _ _ ->
+            Nothing
 
 
 filterExpressionsOnName_ : String -> List Expression -> List Expression
@@ -107,134 +46,71 @@ filterExpressionsOnName_ name exprs =
     List.filter (matchExprOnName_ name) exprs
 
 
-filterExprs : (Expression -> Bool) -> List Expression -> List Expression
-filterExprs predicate list =
-    List.filter (\item -> predicate item) list
+matchExprOnName_ : String -> Expression -> Bool
+matchExprOnName_ name expr =
+    getFunctionName expr == Just name
 
 
-isBlank : Expression -> Bool
-isBlank expr =
-    case expr of
-        Text content _ ->
-            if String.trim content == "" then
-                True
+getFunctionName : Expression -> Maybe String
+getFunctionName expression =
+    case expression of
+        Fun name _ _ ->
+            Just name
 
-            else
-                False
+        VFun _ _ _ ->
+            Nothing
 
-        _ ->
-            False
+        Text _ _ ->
+            Nothing
+
+        ExprList _ _ _ ->
+            Nothing
+
+
+getExpressionContent : ExpressionBlock -> List Expression
+getExpressionContent block =
+    case block.body of
+        Left _ ->
+            []
+
+        Right exprs ->
+            exprs
+
+
+getVerbatimContent : ExpressionBlock -> Maybe String
+getVerbatimContent block =
+    case block.body of
+        Left str ->
+            Just str
+
+        Right _ ->
+            Nothing
+
+
+rawBlockNames : List (Tree ExpressionBlock) -> List String
+rawBlockNames forest =
+    List.map Library.Tree.flatten forest
+        |> List.concat
+        |> List.filterMap Generic.BlockUtilities.getExpressionBlockName
+
+
+expressionNames : List (Tree ExpressionBlock) -> List String
+expressionNames forest =
+    List.map Library.Tree.flatten forest
+        |> List.concat
+        |> List.map getExpressionContent
+        |> List.concat
+        |> List.filterMap getFunctionName
+        |> List.Extra.unique
+        |> List.sort
 
 
 filterBlocksOnName : String -> List ExpressionBlock -> List ExpressionBlock
 filterBlocksOnName name blocks =
-    List.filter (matchBlockName name) blocks
+    List.filter (\block -> Generic.BlockUtilities.getExpressionBlockName block == Just name) blocks
 
 
-filterBlocksOnName2 : String -> String -> List ExpressionBlock -> List ExpressionBlock
-filterBlocksOnName2 name name2 blocks =
-    List.filter (matchBlockName2 name name2) blocks
-
-
-filterNotBlocksOnName : String -> List ExpressionBlock -> List ExpressionBlock
-filterNotBlocksOnName name blocks =
-    List.filter (matchBlockName name >> not) blocks
-
-
-treeFilterOnBlockNames : String -> Tree ExpressionBlock -> Tree ExpressionBlock
-treeFilterOnBlockNames name tree =
-    tree
-
-
-
---filterForestOnBlockNames : String -> Forest ExpressionBlock -> Forest ExpressionBlock
---filterForestOnBlockNames name forest =
---    List.filter (\tree -> predicate (labelName tree)) forest
-
-
-blockNameInList : ExpressionBlock -> List String -> Bool
-blockNameInList block names =
-    Bool.Extra.any (List.map (\name -> matchBlockName name block) names)
-
-
-filterBlocks : (ExpressionBlock -> Bool) -> List ExpressionBlock -> List ExpressionBlock
-filterBlocks predicate blocks =
-    List.filter predicate blocks
-
-
-filterForestOnLabelNames : (Maybe String -> Bool) -> Forest ExpressionBlock -> Forest ExpressionBlock
-filterForestOnLabelNames predicate forest =
-    List.filter (\tree -> predicate (labelName tree)) forest
-
-
-labelName : Tree ExpressionBlock -> Maybe String
-labelName tree =
-    Tree.value tree |> Generic.Language.getName
-
-
-matchBlockName : String -> ExpressionBlock -> Bool
-matchBlockName key block =
-    Just key == Generic.Language.getName block
-
-
-matchBlockName2 : String -> String -> ExpressionBlock -> Bool
-matchBlockName2 key key2 block =
-    (Just key == Generic.Language.getName block) || (Just key2 == Generic.Language.getName block)
-
-
-matchExprOnName : String -> Expression -> Bool
-matchExprOnName name expr =
-    Just name == Generic.Language.getFunctionName expr
-
-
-matchExprOnName_ : String -> Expression -> Bool
-matchExprOnName_ name expr =
-    case Generic.Language.getFunctionName expr of
-        Nothing ->
-            False
-
-        Just name2 ->
-            name == name2
-
-
-matchingIdsInAST : String -> Forest ExpressionBlock -> List String
-matchingIdsInAST key ast =
-    ast |> List.map Library.Tree.flatten |> List.concat |> List.filterMap (idOfMatchingBlockContent key)
-
-
-idOfMatchingBlockContent : String -> ExpressionBlock -> Maybe String
-idOfMatchingBlockContent key block =
-    if String.contains key block.meta.sourceText then
-        Just block.meta.id
-
-    else
-        Nothing
-
-
-titleTOC : Forest ExpressionBlock -> List ExpressionBlock
-titleTOC ast =
-    filterBlocksByArgs "title" ast
-
-
-existsBlockWithName : List (Tree.Tree ExpressionBlock) -> String -> Bool
-existsBlockWithName ast name =
-    let
-        mBlock =
-            ast
-                |> List.map Library.Tree.flatten
-                |> List.concat
-                |> filterBlocksOnName name
-                |> List.head
-    in
-    case mBlock of
-        Nothing ->
-            False
-
-        Just _ ->
-            True
-
-
-getBlockByName : String -> List (Tree.Tree ExpressionBlock) -> Maybe ExpressionBlock
+getBlockByName : String -> List (Tree ExpressionBlock) -> Maybe ExpressionBlock
 getBlockByName name ast =
     ast
         |> List.map Library.Tree.flatten
@@ -243,40 +119,46 @@ getBlockByName name ast =
         |> List.head
 
 
-getBlocksByName : String -> List (Tree.Tree ExpressionBlock) -> List ExpressionBlock
-getBlocksByName name ast =
-    ast
-        |> List.map Library.Tree.flatten
-        |> List.concat
-        |> filterBlocksOnName name
+getBlockArgsByName : String -> List (Tree ExpressionBlock) -> List String
+getBlockArgsByName key ast =
+    case getBlockByName key ast of
+        Nothing ->
+            []
+
+        Just block ->
+            block.args
 
 
-banner : List (Tree ExpressionBlock) -> Maybe ExpressionBlock
-banner ast =
-    ast |> getBlockByName "banner" |> Maybe.map (changeName "banner" "visibleBanner")
+getVerbatimBlockValue : String -> List (Tree ExpressionBlock) -> String
+getVerbatimBlockValue key ast =
+    case getBlockByName key ast of
+        Nothing ->
+            "(" ++ key ++ ")"
+
+        Just block ->
+            case getVerbatimContent block of
+                Just str ->
+                    str
+
+                Nothing ->
+                    "(" ++ key ++ ")"
 
 
-changeName : String -> String -> ExpressionBlock -> ExpressionBlock
-changeName oldName newName block =
-    if block.heading == Ordinary oldName then
-        { block | heading = Ordinary newName }
-
-    else
-        block
+filterForestOnLabelNames : (Maybe String -> Bool) -> List (Tree ExpressionBlock) -> List (Tree ExpressionBlock)
+filterForestOnLabelNames predicate forest =
+    List.filter (\tree -> predicate (Tree.value tree |> Generic.BlockUtilities.getExpressionBlockName)) forest
 
 
 frontMatterDict : List (Tree ExpressionBlock) -> Dict String String
 frontMatterDict ast =
     keyValueDict (getVerbatimBlockValue "docinfo" ast |> String.split "\n" |> fixFrontMatterList)
-        |> Debug.log "@@_FrontMatter"
 
 
 keyValueDict : List String -> Dict String String
 keyValueDict strings_ =
     List.map (String.split ":") strings_
         |> List.map (List.map String.trim)
-        |> List.map pairFromList
-        |> Maybe.Extra.values
+        |> List.filterMap pairFromList
         |> Dict.fromList
 
 
@@ -292,7 +174,7 @@ pairFromList strings =
 
 fixFrontMatterList : List String -> List String
 fixFrontMatterList strings =
-    loop { count = 1, input = strings, output = [] } nextStepFix
+    fixFrontMatterLoop { count = 1, input = strings, output = [] }
         |> List.reverse
         |> handleEmptyDocInfo
 
@@ -306,22 +188,18 @@ handleEmptyDocInfo strings =
         strings
 
 
-type alias FixState =
-    { count : Int, input : List String, output : List String }
-
-
-nextStepFix : FixState -> Step FixState (List String)
-nextStepFix state =
+fixFrontMatterLoop : { count : Int, input : List String, output : List String } -> List String
+fixFrontMatterLoop state =
     case List.head state.input of
         Nothing ->
-            Done state.output
+            state.output
 
         Just line ->
             if line == "" then
-                Loop { state | input = List.drop 1 state.input }
+                fixFrontMatterLoop { state | input = List.drop 1 state.input }
 
             else if String.left 7 line == "author:" then
-                Loop
+                fixFrontMatterLoop
                     { state
                         | input = List.drop 1 state.input
                         , output = String.replace "author:" ("author" ++ String.fromInt state.count ++ ":") line :: state.output
@@ -329,117 +207,14 @@ nextStepFix state =
                     }
 
             else
-                Loop { state | input = List.drop 1 state.input, output = line :: state.output }
-
-
-type Step state a
-    = Loop state
-    | Done a
-
-
-loop : state -> (state -> Step state a) -> a
-loop s nextState_ =
-    case nextState_ s of
-        Loop s_ ->
-            loop s_ nextState_
-
-        Done b ->
-            b
-
-
-getVerbatimBlockValue : String -> List (Tree.Tree ExpressionBlock) -> String
-getVerbatimBlockValue key ast =
-    case getBlockByName key ast of
-        Nothing ->
-            "(" ++ key ++ ")"
-
-        Just block ->
-            case Generic.Language.getVerbatimContent block of
-                Just str ->
-                    str
-
-                Nothing ->
-                    "(" ++ key ++ ")"
-
-
-getBlockArgsByName : String -> List (Tree.Tree ExpressionBlock) -> List String
-getBlockArgsByName key ast =
-    case getBlockByName key ast of
-        Nothing ->
-            []
-
-        Just block ->
-            block.args
-
-
-getValue : String -> List (Tree.Tree ExpressionBlock) -> String
-getValue key ast =
-    case getBlockByName key ast of
-        Nothing ->
-            "(" ++ key ++ ")"
-
-        Just block ->
-            Generic.Language.getExpressionContent block
-                |> List.map getText
-                |> Maybe.Extra.values
-                |> String.join ""
-
-
-title : List (Tree ExpressionBlock) -> String
-title ast =
-    getValue "title" ast
-
-
-extractTextFromSyntaxTreeByKey : String -> Forest ExpressionBlock -> String
-extractTextFromSyntaxTreeByKey key syntaxTree =
-    syntaxTree |> filterBlocksByArgs key |> expressionBlockToText
-
-
-tableOfContents : List (Tree ExpressionBlock) -> List ExpressionBlock
-tableOfContents ast =
-    filterBlocksOnName2 "section" "chapter" (List.map Library.Tree.flatten ast |> List.concat)
-
-
-filterBlocksByArgs : String -> Forest ExpressionBlock -> List ExpressionBlock
-filterBlocksByArgs key ast =
-    ast
-        |> List.map Library.Tree.flatten
-        |> List.concat
-        |> List.filter (matchBlock key)
-
-
-matchBlock : String -> ExpressionBlock -> Bool
-matchBlock key block =
-    case block.heading of
-        Paragraph ->
-            False
-
-        _ ->
-            List.any (String.contains key) block.args
+                fixFrontMatterLoop { state | input = List.drop 1 state.input, output = line :: state.output }
 
 
 exprListToStringList : List Expression -> List String
 exprListToStringList exprList =
-    List.map getText exprList
-        |> Maybe.Extra.values
+    List.filterMap getText exprList
         |> List.map String.trim
         |> List.filter (\s -> s /= "")
-
-
-getText : Expression -> Maybe String
-getText expression =
-    case expression of
-        Text str _ ->
-            Just str
-
-        VFun _ str _ ->
-            Just (String.replace "`" "" str)
-
-        Fun _ expressions _ ->
-            List.map getText expressions |> Maybe.Extra.values |> String.join " " |> Just
-
-        ExprList _ exprList _ ->
-            Nothing
 
 
 stringValueOfList : List Expression -> String
@@ -463,16 +238,16 @@ stringValue expr =
             "[ExprList]"
 
 
-expressionBlockToText : List ExpressionBlock -> String
-expressionBlockToText =
-    toExprRecord >> List.map .content >> List.concat >> List.filterMap getText >> String.join " "
+filterExprs : (Expression -> Bool) -> List Expression -> List Expression
+filterExprs predicate list =
+    List.filter predicate list
 
 
-toExprRecord : List ExpressionBlock -> List { content : List Expression, heading : Heading }
-toExprRecord blocks =
-    List.map toExprList_ blocks
+isBlank : Expression -> Bool
+isBlank expr =
+    case expr of
+        Text content _ ->
+            String.trim content == ""
 
-
-toExprList_ : ExpressionBlock -> { content : List Expression, heading : Heading }
-toExprList_ block =
-    { content = block.body |> Either.toList |> List.concat, heading = block.heading }
+        _ ->
+            False

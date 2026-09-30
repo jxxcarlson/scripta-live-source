@@ -24,7 +24,6 @@ import Element.Background as Background
 import Element.Border as Border
 import Element.Font as Font
 import Html.Attributes
-import Render.Settings exposing (getThemedElementColor)
 import Theme
 import Time
 
@@ -98,7 +97,7 @@ backgroundColor : Theme.Theme -> Element.Color
 backgroundColor theme =
     case theme of
         Theme.Light ->
-            getThemedElementColor .background (Theme.mapTheme theme)
+            Element.rgb 1 1 1
 
         Theme.Dark ->
             Element.rgb255 48 54 59

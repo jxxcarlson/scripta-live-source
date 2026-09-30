@@ -1,33 +1,20 @@
-module Tools.String exposing (..)
+module Tools.String exposing (makeSlug)
 
-import Regex
-
-
-compressWhitespace : String -> String
-compressWhitespace string =
-    userReplace "\\s\\s+" (\_ -> " ") string |> String.trim
+{-| String utilities for the Scripta compiler.
+-}
 
 
-alphanumOnly : String -> String
-alphanumOnly string =
-    userReplace "[^a-z0-9 ]+" (\_ -> " ") string
-
-
-compressSpaces : String -> String
-compressSpaces string =
-    userReplace " +" (\_ -> " ") string
-
-
+{-| Convert a string to a URL-friendly slug.
+-}
 makeSlug : String -> String
 makeSlug str =
-    str |> String.toLower |> alphanumOnly |> compressWhitespace |> String.replace " " "-"
+    str
+        |> String.toLower
+        |> String.trim
+        |> String.replace " " "-"
+        |> String.filter isSlugChar
 
 
-userReplace : String -> (Regex.Match -> String) -> String -> String
-userReplace userRegex replacer string =
-    case Regex.fromString userRegex of
-        Nothing ->
-            string
-
-        Just regex ->
-            Regex.replace regex replacer string
+isSlugChar : Char -> Bool
+isSlugChar c =
+    Char.isAlphaNum c || c == '-' || c == '_'

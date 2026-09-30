@@ -1,226 +1,198 @@
-module Render.TOC exposing (view, viewWithTitle)
+module Render.TOC exposing (build)
 
--- import Render.Block
+{-| Build table of contents from expression blocks.
+-}
 
-import Dict exposing (Dict)
+import Dict
 import Either exposing (Either(..))
-import Element exposing (Element)
-import Element.Events as Events
-import Element.Font as Font
-import Generic.ASTTools
-import Generic.Acc exposing (Accumulator)
-import Generic.Forest exposing (Forest)
-import Generic.Language exposing (ExprMeta, Expression, ExpressionBlock)
-import Library.Tree
-import List.Extra
-import Render.Expression
-import Render.Settings exposing (DisplaySettings)
-import Render.TOCTree
-import Render.Theme
-import Render.Utility
-import ScriptaV2.Config as Config
-import ScriptaV2.Msg exposing (MarkupMsg(..))
-import ScriptaV2.Types
+import Html exposing (Html)
+import Html.Attributes as HA
+import Html.Events as HE
+import RoseTree.Tree as Tree exposing (Tree)
+import V3.Types exposing (Accumulator, CompilerParameters, Expr(..), Expression, ExpressionBlock, Heading(..), Msg(..), Theme(..))
 
 
-viewWithTitle : ScriptaV2.Types.CompilerParameters -> Int -> Accumulator -> List (Element.Attribute MarkupMsg) -> Forest ExpressionBlock -> List (Element ScriptaV2.Msg.MarkupMsg)
-viewWithTitle params counter acc attr ast =
+{-| Section data for TOC entry.
+-}
+type alias TocEntry =
+    { id : String
+    , level : Int
+    , title : String
+    , sectionNumber : String
+    }
+
+
+{-| Build table of contents HTML from a forest.
+-}
+build : CompilerParameters -> Accumulator -> List (Tree ExpressionBlock) -> List (Html Msg)
+build params acc forest =
     let
-        maximumLevel =
-            case Dict.get "contentsdepth" acc.keyValueDict of
-                Just level ->
-                    String.toInt level |> Maybe.withDefault 3
-
-                Nothing ->
-                    3
+        sections =
+            extractSections acc forest
     in
-    -- TODO: bad code!
-    prepareTOCWithTitle maximumLevel counter acc (Render.Settings.default params params.selectedId params.docWidth) attr ast
+    if List.isEmpty sections then
+        []
 
+    else
+        [ Html.div
+            [ HA.style "margin-bottom" "2em"
+            , HA.style "padding" "1em"
+            , HA.style "border" "1px solid #ccc"
+            , HA.style "border-radius" "4px"
+            , HA.style "background-color"
+                (case params.theme of
+                    Light ->
+                        "#f9f9f9"
 
-
---default params selectedId width
-
-
-view : Render.Theme.Theme -> Render.TOCTree.ViewParameters -> Accumulator -> Forest ExpressionBlock -> List (Element ScriptaV2.Msg.MarkupMsg)
-view theme viewParameters acc ast =
-    Render.TOCTree.view theme viewParameters acc ast
-
-
-viewTocItem : String -> Int -> Accumulator -> Render.Settings.RenderSettings -> List (Element.Attribute MarkupMsg) -> ExpressionBlock -> Element MarkupMsg
-viewTocItem selectedId count acc settings attr ({ args, body, properties } as block) =
-    let
-        maximumNumberedTocLevel =
-            3
-    in
-    case body of
-        Left _ ->
-            Element.none
-
-        Right exprs ->
-            let
-                id =
-                    Config.expressionIdPrefix ++ String.fromInt block.meta.lineNumber ++ ".0"
-
-                sectionNumber =
-                    case List.Extra.getAt 1 args of
-                        Just "-" ->
-                            Element.none
-
-                        _ ->
-                            case tocLevel block of
-                                Just level ->
-                                    if level <= maximumNumberedTocLevel then
-                                        Element.el [] (Element.text (blockLabel properties ++ ". "))
-
-                                    else
-                                        Element.none
-
-                                Nothing ->
-                                    Element.none
-
-                label : Element MarkupMsg
-                label =
-                    Element.paragraph [ tocIndent args ] (sectionNumber :: List.map (Render.Expression.render count acc settings attr) exprs)
-
-                color =
-                    if id == selectedId then
-                        Element.rgb 0.8 0 0.0
-
-                    else
-                        Element.rgb 0 0 0.8
-            in
-            Element.el [ Events.onClick (SelectId id) ]
-                (Element.link [ Font.color color ] { url = Render.Utility.internalLink id, label = label })
-
-
-blockLabel : Dict String String -> String
-blockLabel properties =
-    Dict.get "label" properties |> Maybe.withDefault "??"
-
-
-tocLevelAtMost : Int -> ExpressionBlock -> Bool
-tocLevelAtMost k { args } =
-    case List.Extra.getAt 0 args of
-        Nothing ->
-            True
-
-        Just level ->
-            (String.toInt level |> Maybe.withDefault 4) <= k
-
-
-tocLevel : ExpressionBlock -> Maybe Int
-tocLevel { args } =
-    List.Extra.getAt 0 args |> Maybe.andThen String.toInt
-
-
-prepareTOCWithTitle : Int -> Int -> Accumulator -> Render.Settings.RenderSettings -> List (Element.Attribute MarkupMsg) -> Forest ExpressionBlock -> List (Element MarkupMsg)
-prepareTOCWithTitle maximumLevel count acc settings attr ast =
-    let
-        rawToc : List ExpressionBlock
-        rawToc =
-            Generic.ASTTools.tableOfContents ast
-                |> List.filter (tocLevelAtMost maximumLevel)
-
-        headings =
-            getHeadings ast
-
-        title : List (Element MarkupMsg)
-        title =
-            headings.title
-                |> List.map (Render.Expression.render count acc settings attr)
-
-        topItem =
-            let
-                id =
-                    "title"
-            in
-            Element.el [ Events.onClick (SelectId id), Font.size 18 ]
-                (Element.link [ Font.color (Element.rgb 0 0 0.8) ]
-                    { url = Render.Utility.internalLink id, label = Element.paragraph [] title }
+                    Dark ->
+                        "#1a1a1a"
                 )
+            ]
+            (Html.div
+                [ HA.style "font-weight" "bold"
+                , HA.style "margin-bottom" "0.5em"
+                ]
+                [ Html.text "Contents" ]
+                :: List.map (buildTocItem params) sections
+            )
+        ]
 
-        toc =
-            topItem
-                :: (rawToc |> List.map (viewTocItem settings.selectedId count acc settings attr))
-    in
-    toc
+
+{-| Extract section entries from forest.
+-}
+extractSections : Accumulator -> List (Tree ExpressionBlock) -> List TocEntry
+extractSections acc forest =
+    List.concatMap (extractSectionsFromTree acc) forest
 
 
-prepareTOC : Int -> Int -> Accumulator -> Render.Settings.RenderSettings -> List (Element.Attribute MarkupMsg) -> Forest ExpressionBlock -> List (Element MarkupMsg)
-prepareTOC maximumLevel count acc settings attr ast =
+{-| Extract sections from a tree.
+-}
+extractSectionsFromTree : Accumulator -> Tree ExpressionBlock -> List TocEntry
+extractSectionsFromTree acc tree =
     let
-        fixIdInExpressionBlock : ExpressionBlock -> ExpressionBlock
-        fixIdInExpressionBlock block =
-            let
-                meta =
-                    block.meta
+        block =
+            Tree.value tree
 
-                newMeta =
-                    { meta | id = "xy" ++ meta.id }
-            in
-            { block | meta = newMeta }
+        thisEntry =
+            case block.heading of
+                Ordinary "section" ->
+                    [ blockToTocEntry acc block ]
 
-        rawToc : List ExpressionBlock
-        rawToc =
-            Generic.ASTTools.tableOfContents ast
-                |> List.filter (tocLevelAtMost maximumLevel)
-                -- The "xy" line below is needed because we also have the possibility of
-                -- the TOC in the sidebar. We do not want click on a TOC item in the sidebar
-                -- targeting the TOC item in the main text.
-                |> List.map (Generic.Language.updateMetaInBlock (\m -> { m | id = "xy" ++ m.id }))
+                Ordinary "index" ->
+                    [ { id = block.meta.id
+                      , level = 1
+                      , title = "Index"
+                      , sectionNumber = ""
+                      }
+                    ]
 
-        toc =
-            rawToc |> List.map (viewTocItem settings.selectedId count acc settings attr)
+                _ ->
+                    []
+
+        childEntries =
+            List.concatMap (extractSectionsFromTree acc) (Tree.children tree)
     in
-    toc
+    thisEntry ++ childEntries
 
 
-tocIndent args =
-    Element.paddingEach { left = tocIndentAux args, right = 0, top = 0, bottom = 0 }
-
-
-tocIndentAux args =
-    case List.head args of
-        Nothing ->
-            0
-
-        Just str ->
-            String.toInt str |> Maybe.withDefault 0 |> (\x -> 12 * (x - 1))
-
-
-getHeadings : Forest ExpressionBlock -> { title : List Expression, subtitle : List Expression }
-getHeadings ast =
+{-| Convert a section block to a TOC entry.
+-}
+blockToTocEntry : Accumulator -> ExpressionBlock -> TocEntry
+blockToTocEntry acc block =
     let
-        flattened =
-            List.map Library.Tree.flatten ast |> List.concat
+        level =
+            Dict.get "level" block.properties |> Maybe.andThen String.toInt |> Maybe.withDefault 1
 
-        title : List Expression
-        title =
-            flattened
-                |> Generic.ASTTools.filterBlocksOnName "title"
-                |> List.map getContent
-                |> List.concat
+        numberToLevel =
+            Dict.get "number-to-level" acc.keyValueDict
+                |> Maybe.andThen String.toInt
+                |> Maybe.withDefault 0
 
-        --data
-        --    |> List.filter (\item -> item.blockType == OrdinaryBlock [ "title" ])
-        --    |> List.head
-        --    |> Maybe.map .content
-        subtitle : List Expression
-        subtitle =
-            flattened
-                |> Generic.ASTTools.filterBlocksOnName "subtitle"
-                |> List.map getContent
-                |> List.concat
+        label =
+            Dict.get "label" block.properties |> Maybe.withDefault ""
+
+        -- Only include section number if level <= numberToLevel
+        sectionNum =
+            if level <= numberToLevel then
+                label
+
+            else
+                ""
     in
-    { title = title, subtitle = subtitle }
+    { id = block.meta.id
+    , level = level
+    , title = extractTitle block
+    , sectionNumber = sectionNum
+    }
 
 
-getContent : ExpressionBlock -> List Expression
-getContent { body } =
-    case body of
-        Either.Left _ ->
-            []
+{-| Extract title text from block content.
+-}
+extractTitle : ExpressionBlock -> String
+extractTitle block =
+    case block.body of
+        Left str ->
+            str
 
-        Either.Right exprs ->
-            exprs
+        Right expressions ->
+            expressions
+                |> List.map extractTextFromExpr
+                |> String.concat
+
+
+{-| Extract text from an expression.
+-}
+extractTextFromExpr : Expression -> String
+extractTextFromExpr expr =
+    case expr of
+        Text str _ ->
+            str
+
+        Fun _ args _ ->
+            List.map extractTextFromExpr args |> String.concat
+
+        VFun _ content _ ->
+            content
+
+        ExprList _ exprs _ ->
+            List.map extractTextFromExpr exprs |> String.concat
+
+
+{-| Build a single TOC item HTML.
+-}
+buildTocItem : CompilerParameters -> TocEntry -> Html Msg
+buildTocItem params entry =
+    let
+        indent =
+            (entry.level - 1) * 20
+
+        prefix =
+            if entry.sectionNumber /= "" then
+                entry.sectionNumber ++ ". "
+
+            else
+                ""
+    in
+    Html.div
+        [ HA.style "margin-left" (String.fromInt indent ++ "px")
+        , HA.style "margin-bottom" "0.25em"
+        , HA.style "overflow" "hidden"
+        , HA.style "white-space" "nowrap"
+        , HA.style "text-overflow" "ellipsis"
+        , HA.title (prefix ++ entry.title)
+        ]
+        [ Html.a
+            [ HA.href ("#" ++ entry.id)
+            , HE.onClick (SelectId entry.id)
+            , HA.style "color"
+                (case params.theme of
+                    Light ->
+                        "#0066cc"
+
+                    Dark ->
+                        "#66b3ff"
+                )
+            , HA.style "text-decoration" "none"
+            ]
+            [ Html.text (prefix ++ entry.title) ]
+        ]

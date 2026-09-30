@@ -1,16 +1,18 @@
 module ETeX.Transform exposing
     ( evalStr
-    , greekSymbolParser
+    , evalStrResult
+    , inverseTransformETeX
     , makeMacroDict
     , toLaTeXNewCommands
     , transformETeX
+    , transformETeXResult
     )
 
 import Dict exposing (Dict)
 import ETeX.Dictionary
+import ETeX.Let
 import ETeX.KaTeX exposing (isKaTeX)
-import ETeX.MathMacros exposing (MacroBody(..), MathMacroDict, NewCommand(..))
-import Generic.MathMacro
+import ETeX.MathMacros exposing (Deco(..), MacroBody(..), MathExpr(..), MathMacroDict, NewCommand(..))
 import Maybe.Extra
 import Parser.Advanced as PA
     exposing
@@ -37,52 +39,46 @@ import Result.Extra
 
 
 
--- TYPES
-
-
-type MathExpr
-    = AlphaNum String
-    | F0 String
-    | Arg (List MathExpr)
-    | PArg (List MathExpr)
-    | ParenthExpr (List MathExpr)
-    | Sub Deco
-    | Super Deco
-    | Param Int
-    | WS
-    | MathSpace
-    | MathSmallSpace
-    | MathMediumSpace
-    | LeftMathBrace
-    | RightMathBrace
-    | LeftParen
-    | RightParen
-    | Comma
-    | MathSymbols String
-    | GreekSymbol String
-    | Macro String (List MathExpr)
-    | FCall String (List MathExpr)
-    | Expr (List MathExpr)
-    | Text String
-
-
-type Deco
-    = DecoM MathExpr
-    | DecoI Int
-
-
-
--- OTHER --
+-- MAIN FUNCTIONS --
 
 
 transformETeX : MathMacroDict -> String -> String
 transformETeX userdefinedMacroDict src =
-    case transformETeX_ userdefinedMacroDict src of
+    case transformETeXResult userdefinedMacroDict (ETeX.Let.reduce src) of
         Ok result ->
-            List.map print result |> String.join ""
+            result
 
         Err _ ->
-            src
+            -- Return input with error marker so failures are visible in output
+            "[ETeX error] " ++ src
+
+
+transformETeXResult : MathMacroDict -> String -> Result (List (DeadEnd Context Problem)) String
+transformETeXResult userdefinedMacroDict src =
+    transformETeX_ userdefinedMacroDict src
+        |> Result.map (\result -> List.map print result |> String.concat)
+
+
+{-| Partial inverse of `transformETeX`. Parses LaTeX-flavored input and renders
+it back in ETeX form: braces become parentheses, multi-argument macros use
+comma-separated arguments, and bare macros drop the leading backslash.
+
+    inverseTransformETeX Dict.empty "\\sin{x^2}"   == "sin(x^2)"
+    inverseTransformETeX Dict.empty "\\frac{1}{2}" == "frac(1,2)"
+    inverseTransformETeX Dict.empty "\\alpha"      == "alpha"
+
+This is a partial inverse: it handles the simple cases above and passes
+through expressions it does not know how to re-express in ETeX form.
+
+-}
+inverseTransformETeX : MathMacroDict -> String -> String
+inverseTransformETeX userdefinedMacroDict src =
+    case parseManyWithDict userdefinedMacroDict src of
+        Ok exprs ->
+            List.map printETeX exprs |> String.concat
+
+        Err _ ->
+            "[ETeX inverse error] " ++ src
 
 
 isUserDefinedMacro : MathMacroDict -> String -> Bool
@@ -92,7 +88,7 @@ isUserDefinedMacro dict name =
 
 transformETeX_ userdefinedMacroDict src =
     src
-        |> parseMany userdefinedMacroDict
+        |> parseManyWithDict userdefinedMacroDict
         |> Result.map resolveSymbolNames
 
 
@@ -126,8 +122,11 @@ resolveSymbolName expr =
         Macro name args ->
             Macro name (List.map resolveSymbolName args)
 
-        F0 str ->
-            F0 str
+        MacroName str ->
+            MacroName str
+
+        FunctionName str ->
+            FunctionName str
 
         Arg exprs ->
             Arg (List.map resolveSymbolName exprs)
@@ -200,20 +199,19 @@ resolveSymbolNameInDeco deco =
 
 evalStr : MathMacroDict -> String -> String
 evalStr userDefinedMacroDict str =
-    case parseManyWithDict userDefinedMacroDict (String.trim str) of
+    case evalStrResult userDefinedMacroDict (ETeX.Let.reduce str) of
         Ok result ->
-            List.map (expandMacroWithDict userDefinedMacroDict) result |> printList
+            result
 
         Err _ ->
-            -- the intent of evalStr is to expand macros.  So if something
-            -- goes wrong with the process, just return the input string.
-            -- TODO: This solves the problem of false error reporting, but I don't like the solution.
-            str
+            -- Return input with error marker so failures are visible in output
+            "[ETeX error] " ++ str
 
 
-parseMany : MathMacroDict -> String -> Result (List (DeadEnd Context Problem)) (List MathExpr)
-parseMany userDefinedMacroDict str =
-    parseManyWithDict userDefinedMacroDict str
+evalStrResult : MathMacroDict -> String -> Result (List (DeadEnd Context Problem)) String
+evalStrResult userDefinedMacroDict str =
+    parseManyWithDict userDefinedMacroDict (String.trim str)
+        |> Result.map (\result -> List.map (expandMacroWithDict userDefinedMacroDict) result |> printList)
 
 
 parseManyWithDict : MathMacroDict -> String -> Result (List (DeadEnd Context Problem)) (List MathExpr)
@@ -222,9 +220,228 @@ parseManyWithDict userMacroDict str =
         |> String.trim
         |> String.lines
         |> List.map String.trim
-        |> List.map (parseWithDict userMacroDict)
+        |> groupEnvironmentLines
+        |> mergeBraceSpanningLines
+        |> List.map
+            (\chunk ->
+                if String.startsWith "\\begin{" chunk then
+                    Ok [ AlphaNum chunk ]
+
+                else
+                    parseWithDict userMacroDict chunk
+            )
         |> Result.Extra.combine
         |> Result.map List.concat
+
+
+{-| Merge consecutive lines whose `{}` brace nesting is unbalanced, so that a
+brace group an author wrapped across several source lines (for example a
+`\\frac{...}{...}` whose numerator spans lines) is parsed as a single unit.
+
+Lines that are individually brace-balanced — ordinary lines and `\\\\`-separated
+rows alike — are left as separate chunks, so multi-line aligned input is
+unaffected. Environment chunks produced by `groupEnvironmentLines` are
+brace-balanced and therefore also pass through untouched.
+
+-}
+mergeBraceSpanningLines : List String -> List String
+mergeBraceSpanningLines lines =
+    let
+        step line ( pending, depth, result ) =
+            let
+                combined =
+                    if pending == "" then
+                        line
+
+                    else
+                        pending ++ " " ++ line
+
+                newDepth =
+                    depth + netBraceDepth line
+            in
+            if newDepth > 0 then
+                ( combined, newDepth, result )
+
+            else
+                ( "", 0, combined :: result )
+    in
+    case List.foldl step ( "", 0, [] ) lines of
+        ( "", _, result ) ->
+            List.reverse result
+
+        ( pending, _, result ) ->
+            List.reverse (pending :: result)
+
+
+{-| Net change in `{}` nesting contributed by a line: count of unescaped `{`
+minus unescaped `}`. Escaped braces (`\\{`, `\\}`) are literal and not counted.
+-}
+netBraceDepth : String -> Int
+netBraceDepth line =
+    String.foldl
+        (\c ( depth, escaped ) ->
+            if escaped then
+                ( depth, False )
+
+            else
+                case c of
+                    '\\' ->
+                        ( depth, True )
+
+                    '{' ->
+                        ( depth + 1, False )
+
+                    '}' ->
+                        ( depth - 1, False )
+
+                    _ ->
+                        ( depth, False )
+        )
+        ( 0, False )
+        line
+        |> Tuple.first
+
+
+{-| Group lines that form \\begin{...}...\\end{...} blocks into single strings,
+leaving other lines as individual entries.
+-}
+groupEnvironmentLines : List String -> List String
+groupEnvironmentLines lines =
+    groupEnvironmentLinesHelper lines [] [] Nothing
+        |> List.reverse
+
+
+groupEnvironmentLinesHelper : List String -> List String -> List String -> Maybe String -> List String
+groupEnvironmentLinesHelper remaining envAcc result currentEnv =
+    case remaining of
+        [] ->
+            case currentEnv of
+                Nothing ->
+                    result
+
+                Just _ ->
+                    -- Unclosed environment: emit accumulated lines as-is
+                    String.join "\n" (List.reverse envAcc) :: result
+
+        line :: rest ->
+            case currentEnv of
+                Nothing ->
+                    case extractBeginEnv line of
+                        Just envName ->
+                            if String.contains ("\\end{" ++ envName ++ "}") line then
+                                -- Single-line environment
+                                groupEnvironmentLinesHelper rest [] (line :: result) Nothing
+
+                            else
+                                groupEnvironmentLinesHelper rest [ line ] result (Just envName)
+
+                        Nothing ->
+                            -- Check if \begin{ appears later in the line (e.g., "= \begin{pmatrix}")
+                            case splitOnBegin line of
+                                Just ( prefix, beginPart ) ->
+                                    -- Emit the prefix as a regular line, push \begin{...} back
+                                    groupEnvironmentLinesHelper (beginPart :: rest) [] (prefix :: result) Nothing
+
+                                Nothing ->
+                                    groupEnvironmentLinesHelper rest [] (line :: result) Nothing
+
+                Just envName ->
+                    let
+                        newAcc =
+                            line :: envAcc
+                    in
+                    if String.contains ("\\end{" ++ envName ++ "}") line then
+                        let
+                            endTag =
+                                "\\end{" ++ envName ++ "}"
+
+                            ( beforeEnd, afterEnd ) =
+                                splitOnFirst endTag line
+
+                            envLine =
+                                beforeEnd ++ endTag
+
+                            collapsed =
+                                String.join "\n" (List.reverse (envLine :: envAcc))
+
+                            newRemaining =
+                                if String.isEmpty (String.trim afterEnd) then
+                                    rest
+
+                                else
+                                    String.trim afterEnd :: rest
+                        in
+                        groupEnvironmentLinesHelper newRemaining [] (collapsed :: result) Nothing
+
+                    else
+                        groupEnvironmentLinesHelper rest newAcc result (Just envName)
+
+
+{-| Extract environment name from a \\begin{name} line.
+-}
+extractBeginEnv : String -> Maybe String
+extractBeginEnv line =
+    if String.startsWith "\\begin{" line then
+        let
+            afterBegin =
+                String.dropLeft 7 line
+        in
+        case String.split "}" afterBegin of
+            name :: _ ->
+                if String.isEmpty name then
+                    Nothing
+
+                else
+                    Just name
+
+            [] ->
+                Nothing
+
+    else
+        Nothing
+
+
+{-| Split a line at the first \\begin{ if it doesn't start with \\begin{.
+Returns ( prefix, "\\begin{..." ) on success.
+-}
+splitOnBegin : String -> Maybe ( String, String )
+splitOnBegin line =
+    if String.startsWith "\\begin{" line then
+        Nothing
+
+    else
+        case String.indexes "\\begin{" line of
+            idx :: _ ->
+                let
+                    prefix =
+                        String.trim (String.left idx line)
+
+                    beginPart =
+                        String.dropLeft idx line
+                in
+                if String.isEmpty prefix then
+                    Nothing
+
+                else
+                    Just ( prefix, beginPart )
+
+            [] ->
+                Nothing
+
+
+{-| Split a string on the first occurrence of a separator.
+Returns ( before, after ) where the separator is excluded from both.
+-}
+splitOnFirst : String -> String -> ( String, String )
+splitOnFirst sep str =
+    case String.indexes sep str of
+        idx :: _ ->
+            ( String.left idx str
+            , String.dropLeft (idx + String.length sep) str
+            )
+
+        [] ->
+            ( str, "" )
 
 
 
@@ -289,6 +506,7 @@ expandMacroWithDict dict expr =
                                 extractMacroArgs args
                     in
                     Expr (expandMacro_ (List.map (expandMacroWithDict dict) macroArgs) (MacroBody arity exprs))
+                        |> expandMacroWithDict dict
 
         Arg exprs ->
             Arg (List.map (expandMacroWithDict dict) exprs)
@@ -328,8 +546,11 @@ expandMacroWithDict dict expr =
         AlphaNum str ->
             AlphaNum str
 
-        F0 str ->
-            F0 str
+        MacroName str ->
+            MacroName str
+
+        FunctionName str ->
+            FunctionName str
 
         Param n ->
             Param n
@@ -377,13 +598,8 @@ expandMacroWithDict dict expr =
 
 -}
 expandMacro_ : List MathExpr -> MacroBody -> List MathExpr
-expandMacro_ args (MacroBody arity macroDefBody) =
-    -- Convert ETeX.MathMacros.MathExpr to local MathExpr
-    let
-        localMacroDefBody =
-            List.map convertFromETeXMathExpr macroDefBody
-    in
-    replaceParams args localMacroDefBody
+expandMacro_ args (MacroBody _ macroDefBody) =
+    replaceParams args macroDefBody
 
 
 replaceParam_ : Int -> MathExpr -> MathExpr -> MathExpr
@@ -437,8 +653,11 @@ replaceParam_ k expr target =
         AlphaNum str ->
             AlphaNum str
 
-        F0 str ->
-            F0 str
+        MacroName str ->
+            MacroName str
+
+        FunctionName str ->
+            FunctionName str
 
         WS ->
             WS
@@ -524,7 +743,7 @@ addMixedFormatMacro line dict =
 
     else if String.contains ":" line then
         -- Simple format
-        case parseSimpleMacroWithContext knownMacros line of
+        case parseSimpleMacroWithContext knownMacros dict line of
             Just ( name, body ) ->
                 Dict.insert name body dict
 
@@ -540,8 +759,8 @@ addMixedFormatMacro line dict =
 -- Parse with context of known macro names
 
 
-parseSimpleMacroWithContext : List String -> String -> Maybe ( String, MacroBody )
-parseSimpleMacroWithContext knownMacros line =
+parseSimpleMacroWithContext : List String -> MathMacroDict -> String -> Maybe ( String, MacroBody )
+parseSimpleMacroWithContext knownMacros macroDict line =
     case String.split ":" line of
         [ name, body ] ->
             let
@@ -559,7 +778,7 @@ parseSimpleMacroWithContext knownMacros line =
                 newCommandStr =
                     "\\newcommand{\\" ++ trimmedName ++ "}{" ++ processedBody ++ "}"
             in
-            parseNewCommand Dict.empty newCommandStr
+            parseNewCommand macroDict newCommandStr
                 |> makeEntry
 
         _ ->
@@ -623,33 +842,41 @@ tokenizeHelper chars acc =
 
         '#' :: rest ->
             -- Parse parameter number
-            case takeDigits rest of
-                ( digits, remaining ) ->
-                    case String.toInt (String.fromList digits) of
-                        Just n ->
-                            tokenizeHelper remaining (SimpleParam n :: acc)
+            let
+                ( digits, remaining ) =
+                    takeDigits rest
+            in
+            case String.toInt (String.fromList digits) of
+                Just n ->
+                    tokenizeHelper remaining (SimpleParam n :: acc)
 
-                        Nothing ->
-                            tokenizeHelper rest (SimpleSymbol "#" :: acc)
+                Nothing ->
+                    tokenizeHelper rest (SimpleSymbol "#" :: acc)
 
         '{' :: rest ->
             -- Collect content until matching '}'
-            case collectUntilCloseBrace rest 1 [] of
-                ( content, remaining ) ->
-                    tokenizeHelper remaining (SimpleBrace "{" (String.fromList content) :: acc)
+            let
+                ( content, remaining ) =
+                    collectUntilCloseBrace rest 1 []
+            in
+            tokenizeHelper remaining (SimpleBrace "{" (String.fromList content) :: acc)
 
         c :: rest ->
             if Char.isAlpha c then
                 -- Collect alphabetic word
-                case takeAlphas (c :: rest) of
-                    ( word, remaining ) ->
-                        tokenizeHelper remaining (SimpleWord (String.fromList word) :: acc)
+                let
+                    ( word, remaining ) =
+                        takeAlphas (c :: rest)
+                in
+                tokenizeHelper remaining (SimpleWord (String.fromList word) :: acc)
 
             else if c == ' ' || c == '\t' || c == '\n' then
                 -- Collect whitespace
-                case takeSpaces (c :: rest) of
-                    ( spaces, remaining ) ->
-                        tokenizeHelper remaining (SimpleSpace (String.fromList spaces) :: acc)
+                let
+                    ( spaces, remaining ) =
+                        takeSpaces (c :: rest)
+                in
+                tokenizeHelper remaining (SimpleSpace (String.fromList spaces) :: acc)
 
             else
                 -- Single symbol
@@ -660,66 +887,37 @@ tokenizeHelper chars acc =
 -- Helper to take digits
 
 
-takeDigits : List Char -> ( List Char, List Char )
-takeDigits chars =
+takeWhile : (Char -> Bool) -> List Char -> ( List Char, List Char )
+takeWhile pred chars =
     case chars of
         [] ->
             ( [], [] )
 
         c :: rest ->
-            if Char.isDigit c then
+            if pred c then
                 let
-                    ( digits, remaining ) =
-                        takeDigits rest
+                    ( taken, remaining ) =
+                        takeWhile pred rest
                 in
-                ( c :: digits, remaining )
+                ( c :: taken, remaining )
 
             else
                 ( [], chars )
 
 
-
--- Helper to take alphabetic characters
+takeDigits : List Char -> ( List Char, List Char )
+takeDigits =
+    takeWhile Char.isDigit
 
 
 takeAlphas : List Char -> ( List Char, List Char )
-takeAlphas chars =
-    case chars of
-        [] ->
-            ( [], [] )
-
-        c :: rest ->
-            if Char.isAlpha c then
-                let
-                    ( alphas, remaining ) =
-                        takeAlphas rest
-                in
-                ( c :: alphas, remaining )
-
-            else
-                ( [], chars )
-
-
-
--- Helper to take spaces
+takeAlphas =
+    takeWhile Char.isAlpha
 
 
 takeSpaces : List Char -> ( List Char, List Char )
-takeSpaces chars =
-    case chars of
-        [] ->
-            ( [], [] )
-
-        c :: rest ->
-            if c == ' ' || c == '\t' || c == '\n' then
-                let
-                    ( spaces, remaining ) =
-                        takeSpaces rest
-                in
-                ( c :: spaces, remaining )
-
-            else
-                ( [], chars )
+takeSpaces =
+    takeWhile (\c -> c == ' ' || c == '\t' || c == '\n')
 
 
 
@@ -774,8 +972,9 @@ processTokensWithLookahead knownMacros tokens =
 
         (SimpleWord word) :: (SimpleSymbol "(") :: rest ->
             -- Word followed by ( - check if it's a function-like macro
-            if isKaTeX word && needsBraceConversion word then
-                -- For macros like frac, binom that need brace arguments
+            if (isKaTeX word && needsBraceConversion word) || List.member word knownMacros then
+                -- For macros like frac, binom that need brace arguments,
+                -- and user-defined macros with parenthesized arguments
                 let
                     ( args, remaining ) =
                         extractParenArgs rest []
@@ -786,9 +985,6 @@ processTokensWithLookahead knownMacros tokens =
                 SimpleWord ("\\" ++ word) :: convertArgsToBraces processedArgs ++ processTokensWithLookahead knownMacros remaining
 
             else if isKaTeX word then
-                SimpleWord ("\\" ++ word) :: SimpleSymbol "(" :: processTokensWithLookahead knownMacros rest
-
-            else if List.member word knownMacros then
                 SimpleWord ("\\" ++ word) :: SimpleSymbol "(" :: processTokensWithLookahead knownMacros rest
 
             else
@@ -901,13 +1097,20 @@ toLaTeXNewCommands input =
 
 
 
--- Convert a single simple macro line to LaTeX newcommand
+-- Convert a single macro line to LaTeX newcommand.
+-- Handles both legacy LaTeX-style (\newcommand{...}{...})
+-- and new ETeX-style (name : body) definitions.
 
 
 simpleMacroToLaTeX : String -> String
 simpleMacroToLaTeX line =
-    if String.contains ":" line then
-        case parseSimpleMacroWithContext [] line of
+    if String.startsWith "\\newcommand" line || String.startsWith "\\renewcommand" line then
+        -- Legacy LaTeX-style: pass through verbatim
+        line
+
+    else if String.contains ":" line then
+        -- New ETeX-style: name : body
+        case parseSimpleMacroWithContext [] Dict.empty line of
             Just ( name, MacroBody arity _ ) ->
                 let
                     processedBody =
@@ -930,322 +1133,7 @@ simpleMacroToLaTeX line =
 
 
 
--- CONVERSIONS
--- Convert local MacroBody to Generic.MathMacro.MacroBody
-
-
-convertToGenericMacroBody : MacroBody -> Generic.MathMacro.MacroBody
-convertToGenericMacroBody (MacroBody arity exprs) =
-    let
-        localExprs =
-            List.map convertFromETeXMathExpr exprs
-    in
-    Generic.MathMacro.MacroBody arity (List.map convertToGenericMathExpr localExprs)
-
-
-
--- Convert local MathExpr to Generic.MathMacro.MathExpr
-
-
-convertToGenericMathExpr : MathExpr -> Generic.MathMacro.MathExpr
-convertToGenericMathExpr expr =
-    case expr of
-        AlphaNum str ->
-            Generic.MathMacro.AlphaNum str
-
-        F0 str ->
-            Generic.MathMacro.F0 str
-
-        Arg exprs ->
-            Generic.MathMacro.Arg (List.map convertToGenericMathExpr exprs)
-
-        PArg exprs ->
-            -- Convert PArg to Arg in generic representation
-            Generic.MathMacro.Arg (List.map convertToGenericMathExpr exprs)
-
-        ParenthExpr exprs ->
-            -- Convert ParenthExpr to Expr in generic representation
-            Generic.MathMacro.Expr (List.map convertToGenericMathExpr exprs)
-
-        Sub deco ->
-            Generic.MathMacro.Sub (convertToGenericDeco deco)
-
-        Super deco ->
-            Generic.MathMacro.Super (convertToGenericDeco deco)
-
-        Param n ->
-            Generic.MathMacro.Param n
-
-        WS ->
-            Generic.MathMacro.WS
-
-        MathSpace ->
-            Generic.MathMacro.MathSpace
-
-        MathSmallSpace ->
-            Generic.MathMacro.MathSmallSpace
-
-        MathMediumSpace ->
-            Generic.MathMacro.MathMediumSpace
-
-        LeftMathBrace ->
-            Generic.MathMacro.LeftMathBrace
-
-        RightMathBrace ->
-            Generic.MathMacro.RightMathBrace
-
-        LeftParen ->
-            -- Convert to MathSymbols in generic representation
-            Generic.MathMacro.MathSymbols "("
-
-        RightParen ->
-            -- Convert to MathSymbols in generic representation
-            Generic.MathMacro.MathSymbols ")"
-
-        Comma ->
-            -- Convert to MathSymbols in generic representation
-            Generic.MathMacro.MathSymbols ","
-
-        MathSymbols str ->
-            Generic.MathMacro.MathSymbols str
-
-        Macro name args ->
-            Generic.MathMacro.Macro name (List.map convertToGenericMathExpr args)
-
-        FCall name args ->
-            -- Convert FCall to Macro in generic representation
-            Generic.MathMacro.Macro name (List.map convertToGenericMathExpr args)
-
-        Expr exprs ->
-            Generic.MathMacro.Expr (List.map convertToGenericMathExpr exprs)
-
-        Text str ->
-            -- Generic.MathMacro doesn't have Text, so convert to MathSymbols
-            Generic.MathMacro.MathSymbols str
-
-        GreekSymbol str ->
-            -- Convert GreekSymbol to AlphaNum with backslash
-            Generic.MathMacro.AlphaNum ("\\" ++ str)
-
-
-
--- Convert local Deco to Generic.MathMacro.Deco
-
-
-convertToGenericDeco : Deco -> Generic.MathMacro.Deco
-convertToGenericDeco deco =
-    case deco of
-        DecoM expr ->
-            Generic.MathMacro.DecoM (convertToGenericMathExpr expr)
-
-        DecoI n ->
-            Generic.MathMacro.DecoI n
-
-
-
--- Convert local MathExpr to ETeX.MathMacros.MathExpr
-
-
-convertToETeXMathExpr : MathExpr -> ETeX.MathMacros.MathExpr
-convertToETeXMathExpr expr =
-    case expr of
-        AlphaNum str ->
-            ETeX.MathMacros.AlphaNum str
-
-        F0 str ->
-            ETeX.MathMacros.MacroName str
-
-        Param n ->
-            ETeX.MathMacros.Param n
-
-        WS ->
-            ETeX.MathMacros.WS
-
-        MathSpace ->
-            ETeX.MathMacros.MathSpace
-
-        MathSmallSpace ->
-            ETeX.MathMacros.MathSmallSpace
-
-        MathMediumSpace ->
-            ETeX.MathMacros.MathMediumSpace
-
-        LeftMathBrace ->
-            ETeX.MathMacros.LeftMathBrace
-
-        RightMathBrace ->
-            ETeX.MathMacros.RightMathBrace
-
-        MathSymbols str ->
-            ETeX.MathMacros.MathSymbols str
-
-        Arg exprs ->
-            ETeX.MathMacros.Arg (List.map convertToETeXMathExpr exprs)
-
-        PArg exprs ->
-            -- Convert to Arg since ETeX.MathMacros doesn't have PArg
-            ETeX.MathMacros.Arg (List.map convertToETeXMathExpr exprs)
-
-        ParenthExpr exprs ->
-            -- Convert to Expr since ETeX.MathMacros doesn't have ParenthExpr
-            ETeX.MathMacros.Expr (List.map convertToETeXMathExpr exprs)
-
-        Sub decoExpr ->
-            ETeX.MathMacros.Sub (convertToETeXDeco decoExpr)
-
-        Super decoExpr ->
-            ETeX.MathMacros.Super (convertToETeXDeco decoExpr)
-
-        Macro name args ->
-            ETeX.MathMacros.Macro name (List.map convertToETeXMathExpr args)
-
-        FCall name args ->
-            ETeX.MathMacros.Macro name (List.map convertToETeXMathExpr args)
-
-        Expr exprs ->
-            ETeX.MathMacros.Expr (List.map convertToETeXMathExpr exprs)
-
-        LeftParen ->
-            ETeX.MathMacros.LeftParen
-
-        RightParen ->
-            ETeX.MathMacros.RightParen
-
-        Comma ->
-            ETeX.MathMacros.Comma
-
-        Text str ->
-            ETeX.MathMacros.MathSymbols str
-
-        GreekSymbol str ->
-            ETeX.MathMacros.AlphaNum ("\\" ++ str)
-
-
-
--- Convert local Deco to ETeX.MathMacros.Deco
-
-
-convertToETeXDeco : Deco -> ETeX.MathMacros.Deco
-convertToETeXDeco deco =
-    case deco of
-        DecoM mathExpr ->
-            ETeX.MathMacros.DecoM (convertToETeXMathExpr mathExpr)
-
-        DecoI n ->
-            ETeX.MathMacros.DecoI n
-
-
-
--- Convert ETeX.MathMacros.MathExpr to local MathExpr
-
-
-convertFromETeXMathExpr : ETeX.MathMacros.MathExpr -> MathExpr
-convertFromETeXMathExpr expr =
-    case expr of
-        ETeX.MathMacros.AlphaNum str ->
-            AlphaNum str
-
-        ETeX.MathMacros.MacroName str ->
-            F0 str
-
-        ETeX.MathMacros.FunctionName str ->
-            F0 str
-
-        ETeX.MathMacros.Param n ->
-            Param n
-
-        ETeX.MathMacros.WS ->
-            WS
-
-        ETeX.MathMacros.MathSpace ->
-            MathSpace
-
-        ETeX.MathMacros.MathSmallSpace ->
-            MathSmallSpace
-
-        ETeX.MathMacros.MathMediumSpace ->
-            MathMediumSpace
-
-        ETeX.MathMacros.LeftMathBrace ->
-            LeftMathBrace
-
-        ETeX.MathMacros.RightMathBrace ->
-            RightMathBrace
-
-        ETeX.MathMacros.MathSymbols str ->
-            MathSymbols str
-
-        ETeX.MathMacros.Arg exprs ->
-            Arg (List.map convertFromETeXMathExpr exprs)
-
-        ETeX.MathMacros.Sub decoExpr ->
-            Sub (convertFromETeXDeco decoExpr)
-
-        ETeX.MathMacros.Super decoExpr ->
-            Super (convertFromETeXDeco decoExpr)
-
-        ETeX.MathMacros.Macro name args ->
-            Macro name (List.map convertFromETeXMathExpr args)
-
-        ETeX.MathMacros.Expr exprs ->
-            Expr (List.map convertFromETeXMathExpr exprs)
-
-        ETeX.MathMacros.LeftParen ->
-            LeftParen
-
-        ETeX.MathMacros.RightParen ->
-            RightParen
-
-        ETeX.MathMacros.Comma ->
-            Comma
-
-
-
--- Convert ETeX.MathMacros.Deco to local Deco
-
-
-convertFromETeXDeco : ETeX.MathMacros.Deco -> Deco
-convertFromETeXDeco deco =
-    case deco of
-        ETeX.MathMacros.DecoM mathExpr ->
-            DecoM (convertFromETeXMathExpr mathExpr)
-
-        ETeX.MathMacros.DecoI n ->
-            DecoI n
-
-
-
--- Convert a dictionary of local MacroBody to MathMacroDict
--- Helper to find the maximum parameter number in a macro body
--- Helper to find max param in ETeX.MathMacros.MathExpr type
-
-
-findMaxParamInMathMacros : List ETeX.MathMacros.MathExpr -> Int
-findMaxParamInMathMacros exprs =
-    case exprs of
-        [] ->
-            0
-
-        (ETeX.MathMacros.Param n) :: rest ->
-            max n (findMaxParamInMathMacros rest)
-
-        (ETeX.MathMacros.Arg innerExprs) :: rest ->
-            max (findMaxParamInMathMacros innerExprs) (findMaxParamInMathMacros rest)
-
-        (ETeX.MathMacros.Macro _ args) :: rest ->
-            max (findMaxParamInMathMacros args) (findMaxParamInMathMacros rest)
-
-        (ETeX.MathMacros.Expr innerExprs) :: rest ->
-            max (findMaxParamInMathMacros innerExprs) (findMaxParamInMathMacros rest)
-
-        (ETeX.MathMacros.Sub (ETeX.MathMacros.DecoM expr)) :: rest ->
-            max (findMaxParamInMathMacros [ expr ]) (findMaxParamInMathMacros rest)
-
-        (ETeX.MathMacros.Super (ETeX.MathMacros.DecoM expr)) :: rest ->
-            max (findMaxParamInMathMacros [ expr ]) (findMaxParamInMathMacros rest)
-
-        _ :: rest ->
-            findMaxParamInMathMacros rest
+-- HELPERS
 
 
 findMaxParam : List MathExpr -> Int
@@ -1285,10 +1173,10 @@ findMaxParam exprs =
             findMaxParam rest
 
 
-makeEntry : Result error ETeX.MathMacros.NewCommand -> Maybe ( String, MacroBody )
+makeEntry : Result error NewCommand -> Maybe ( String, MacroBody )
 makeEntry newCommand_ =
     case newCommand_ of
-        Ok (ETeX.MathMacros.NewCommand (ETeX.MathMacros.MacroName name) arity [ ETeX.MathMacros.Arg body ]) ->
+        Ok (NewCommand (MacroName name) arity [ Arg body ]) ->
             -- Use the arity from the NewCommand or deduce from parameters
             let
                 deducedArity =
@@ -1296,9 +1184,9 @@ makeEntry newCommand_ =
                         arity
 
                     else
-                        findMaxParamInMathMacros body
+                        findMaxParam body
             in
-            Just ( name, ETeX.MathMacros.MacroBody deducedArity body )
+            Just ( name, MacroBody deducedArity body )
 
         _ ->
             Nothing
@@ -1348,12 +1236,76 @@ parseWithDict userMacroDict str =
     PA.run (many (mathExprParser userMacroDict)) str
 
 
+isTextModeCommand : String -> Bool
+isTextModeCommand name =
+    List.member name [ "text", "textsf", "textbf", "textit", "texttt", "textrm", "textsc", "mbox" ]
+
+
+chompBraceBalanced : PA.Parser Context Problem ()
+chompBraceBalanced =
+    loop 0 chompBraceBalancedStep
+
+
+chompBraceBalancedStep : Int -> PA.Parser Context Problem (Step Int ())
+chompBraceBalancedStep depth =
+    if depth == 0 then
+        oneOf
+            [ chompIf (\c -> c == '{') ExpectingLeftBrace |> map (\_ -> Loop 1)
+            , chompIf (\c -> c /= '{' && c /= '}') ExpectingNotAlpha |> map (\_ -> Loop 0)
+            , succeed (Done ())
+            ]
+
+    else
+        oneOf
+            [ chompIf (\c -> c == '{') ExpectingLeftBrace |> map (\_ -> Loop (depth + 1))
+            , chompIf (\c -> c == '}') ExpectingRightBrace |> map (\_ -> Loop (depth - 1))
+            , chompIf (\c -> c /= '{' && c /= '}') ExpectingNotAlpha |> map (\_ -> Loop depth)
+            ]
+
+
+rawBraceArg : PA.Parser Context Problem MathExpr
+rawBraceArg =
+    succeed (\start end src -> Arg [ AlphaNum (String.slice start end src) ])
+        |. symbol (Token "{" ExpectingLeftBrace)
+        |= getOffset
+        |. chompBraceBalanced
+        |= getOffset
+        |= getSource
+        |. symbol (Token "}" ExpectingRightBrace)
+
+
 macroParser : MathMacroDict -> PA.Parser Context Problem MathExpr
 macroParser userMacroDict =
-    succeed Macro
+    succeed identity
         |. symbol (Token "\\" ExpectingBackslash)
-        |= alphaNumParser_
-        |= many (argParser userMacroDict)
+        |= oneOf
+            [ alphaNumParser_
+                |> PA.andThen
+                    (\name ->
+                        if isTextModeCommand name then
+                            many rawBraceArg |> map (\args -> Macro name args)
+
+                        else
+                            many (argParser userMacroDict) |> map (\args -> Macro name args)
+                    )
+
+            -- LaTeX control symbol: a backslash followed by a single
+            -- non-alphanumeric character, e.g. \$ \% \& \# \_
+            , controlSymbolParser
+            ]
+
+
+{-| Parse a LaTeX control symbol — a single non-alphanumeric character whose
+leading backslash has already been consumed by `macroParser`. The result
+prints back verbatim (e.g. `\$` renders as a literal dollar sign in KaTeX).
+-}
+controlSymbolParser : PA.Parser Context Problem MathExpr
+controlSymbolParser =
+    succeed (\start end src -> AlphaNum ("\\" ++ String.slice start end src))
+        |= getOffset
+        |. chompIf (\c -> not (Char.isAlphaNum c)) ExpectingNotAlpha
+        |= getOffset
+        |= getSource
 
 
 
@@ -1385,7 +1337,7 @@ functionArgListParser userMacroDict =
                 , leftBraceParser
                 , rightBraceParser
                 , macroParser userMacroDict
-                , alphaNumOrMacroParser userMacroDict -- Check if alphaNum is a macro
+                , lazy (\_ -> alphaNumWithLookaheadParser userMacroDict) -- Check if alphaNum is a macro (with lookahead for nested calls like bvec(p))
                 , mathSymbolsParser
                 , lazy (\_ -> argParser userMacroDict)
                 , lazy (\_ -> standaloneParenthExprParser userMacroDict)
@@ -1401,29 +1353,6 @@ functionArgListParser userMacroDict =
 
 
 -- Parse alpha numeric without lookahead (to avoid recursion)
-
-
-alphaNumWithoutLookaheadParser : PA.Parser c Problem MathExpr
-alphaNumWithoutLookaheadParser =
-    alphaNumParser_ |> PA.map AlphaNum
-
-
-
--- Parse alpha numeric and check if it's a macro (no lookahead for parentheses)
-
-
-alphaNumOrMacroParser : MathMacroDict -> PA.Parser Context Problem MathExpr
-alphaNumOrMacroParser userMacroDict =
-    alphaNumParser_
-        |> PA.map
-            (\name ->
-                if isKaTeX name || isUserDefinedMacro userMacroDict name then
-                    Macro name []
-
-                else
-                    AlphaNum name
-            )
-
 
 
 -- Helper for parsing one or more items
@@ -1500,7 +1429,9 @@ alphaNumWithLookaheadParser userMacroDict =
             (\name ->
                 oneOf
                     [ -- Check if followed by '(' and parse comma-separated arguments
-                      functionArgsParser userMacroDict
+                      -- backtrackable: if argument parsing fails (e.g. \, inside parens),
+                      -- fall back to treating the identifier as plain AlphaNum
+                      backtrackable (functionArgsParser userMacroDict)
                         |> PA.map
                             (\args ->
                                 if isKaTeX name || isUserDefinedMacro userMacroDict name then
@@ -1531,9 +1462,12 @@ mathExprParser userMacroDict =
         , mathSpaceParser
         , leftBraceParser
         , rightBraceParser
+        , backtrackable lineBreakParser
         , alphaNumWithLookaheadParser userMacroDict -- This handles both function calls and plain alphanums
         , macroParser userMacroDict
-        , lazy (\_ -> standaloneParenthExprParser userMacroDict) -- For standalone parentheses
+        , backtrackable (lazy (\_ -> standaloneParenthExprParser userMacroDict)) -- For standalone parentheses
+        , leftParenParser -- Fallback: bare ( when standaloneParenthExprParser backtracks
+        , rightParenParser -- Bare )
         , commaParser
         , mathSymbolsParser
         , lazy (\_ -> argParser userMacroDict)
@@ -1605,6 +1539,12 @@ mathMediumSpaceParser =
         |. symbol (Token "\\;" ExpectingMathMediumSpace)
 
 
+lineBreakParser : PA.Parser c Problem MathExpr
+lineBreakParser =
+    succeed (MathSymbols "\\\\")
+        |. symbol (Token "\\\\" ExpectingBackslash)
+
+
 leftBraceParser : PA.Parser c Problem MathExpr
 leftBraceParser =
     succeed LeftMathBrace
@@ -1618,7 +1558,16 @@ rightBraceParser =
 
 
 
--- Removed unused parsers: leftParenParser and rightParenParser
+leftParenParser : PA.Parser c Problem MathExpr
+leftParenParser =
+    succeed LeftParen
+        |. symbol (Token "(" ExpectingLeftParen)
+
+
+rightParenParser : PA.Parser c Problem MathExpr
+rightParenParser =
+    succeed RightParen
+        |. symbol (Token ")" ExpectingRightParen)
 
 
 commaParser : PA.Parser c Problem MathExpr
@@ -1629,7 +1578,7 @@ commaParser =
 
 newCommandParser1 : MathMacroDict -> PA.Parser Context Problem NewCommand
 newCommandParser1 userMacroDict =
-    succeed (\name arity body -> NewCommand (convertToETeXMathExpr name) arity (List.map convertToETeXMathExpr body))
+    succeed (\name arity body -> NewCommand name arity body)
         |. symbol (Token "\\newcommand" ExpectingNewCommand)
         |. symbol (Token "{" ExpectingLeftBrace)
         |= f0Parser
@@ -1640,7 +1589,7 @@ newCommandParser1 userMacroDict =
 
 newCommandParser2 : MathMacroDict -> PA.Parser Context Problem NewCommand
 newCommandParser2 userMacroDict =
-    succeed (\name body -> NewCommand (convertToETeXMathExpr name) 0 (List.map convertToETeXMathExpr body))
+    succeed (\name body -> NewCommand name 0 body)
         |. symbol (Token "\\newcommand" ExpectingNewCommand)
         |. symbol (Token "{" ExpectingLeftBrace)
         |= f0Parser
@@ -1666,10 +1615,42 @@ standaloneParenthExprParser : MathMacroDict -> PA.Parser Context Problem MathExp
 standaloneParenthExprParser userMacroDict =
     (succeed identity
         |. symbol (Token "(" ExpectingLeftParen)
-        |= lazy (\_ -> many (mathExprParser userMacroDict))
+        |= lazy (\_ -> many (mathExprParserInsideParens userMacroDict))
     )
         |. symbol (Token ")" ExpectingRightParen)
         |> PA.map ParenthExpr
+
+
+{-| Like mathExprParser but without rightParenParser.
+
+Inside a parenthesized expression, `)` must NOT be consumed as a RightParen node
+by the inner parser. Instead, `)` should be invisible to the inner `many` loop so
+it stops, allowing standaloneParenthExprParser's own `)` delimiter to consume it.
+Nested parens are handled by recursive standaloneParenthExprParser calls.
+-}
+mathExprParserInsideParens : MathMacroDict -> PA.Parser Context Problem MathExpr
+mathExprParserInsideParens userMacroDict =
+    oneOf
+        [ textParser
+        , backtrackable greekSymbolParser
+        , mathMediumSpaceParser
+        , mathSmallSpaceParser
+        , mathSpaceParser
+        , leftBraceParser
+        , rightBraceParser
+        , alphaNumWithLookaheadParser userMacroDict
+        , macroParser userMacroDict
+        , backtrackable (lazy (\_ -> standaloneParenthExprParser userMacroDict))
+        , leftParenParser
+        , commaParser
+        , mathSymbolsParser
+        , lazy (\_ -> argParser userMacroDict)
+        , paramParser
+        , whitespaceParser
+        , f0Parser
+        , subscriptParser userMacroDict
+        , superscriptParser userMacroDict
+        ]
 
 
 whitespaceParser =
@@ -1693,7 +1674,7 @@ alphaNumParser_ =
 f0Parser : PA.Parser Context Problem MathExpr
 f0Parser =
     second (symbol (Token "\\" ExpectingBackslash)) alphaNumParser_
-        |> PA.map F0
+        |> PA.map MacroName
 
 
 paramParser =
@@ -1724,7 +1705,7 @@ superscriptParser userMacroDict =
 
 decoParser : MathMacroDict -> PA.Parser Context Problem Deco
 decoParser userMacroDict =
-    oneOf [ numericDecoParser, lazy (\_ -> mathExprParser userMacroDict) |> PA.map DecoM ]
+    oneOf [ backtrackable numericDecoParser, lazy (\_ -> mathExprParser userMacroDict) |> PA.map DecoM ]
 
 
 numericDecoParser =
@@ -1735,24 +1716,10 @@ numericDecoParser =
 -- PRINT
 
 
-printNewCommand (NewCommand mathExpr arity body) =
-    let
-        localMathExpr =
-            convertFromETeXMathExpr mathExpr
-
-        localBody =
-            List.map convertFromETeXMathExpr body
-    in
-    if arity == 0 then
-        "\\newcommand" ++ encloseB (print localMathExpr) ++ printList localBody
-
-    else
-        "\\newcommand" ++ encloseB (print localMathExpr) ++ "[" ++ String.fromInt arity ++ "]" ++ printList localBody
-
 
 printList : List MathExpr -> String
 printList exprs =
-    List.map print exprs |> String.join ""
+    List.map print exprs |> String.concat
 
 
 print : MathExpr -> String
@@ -1782,8 +1749,11 @@ print expr =
         MathSpace ->
             "\\ "
 
-        F0 str ->
+        MacroName str ->
             "\\" ++ str
+
+        FunctionName str ->
+            str
 
         Param k ->
             "#" ++ String.fromInt k
@@ -1833,7 +1803,7 @@ print expr =
             name ++ "(" ++ printArgList args ++ ")"
 
         Expr exprs ->
-            List.map print exprs |> String.join ""
+            List.map print exprs |> String.concat
 
         Comma ->
             ","
@@ -1856,6 +1826,191 @@ printDeco deco =
 
         DecoI k ->
             String.fromInt k
+
+
+
+-- PRINT (ETeX form — used by inverseTransformETeX)
+
+
+printETeXList : List MathExpr -> String
+printETeXList exprs =
+    List.map printETeX exprs |> String.concat
+
+
+printETeX : MathExpr -> String
+printETeX expr =
+    case expr of
+        Macro name body ->
+            printETeXMacro name body
+
+        Arg exprs ->
+            encloseB (printETeXList exprs)
+
+        PArg exprs ->
+            encloseP (printETeXList exprs)
+
+        ParenthExpr exprs ->
+            encloseP (printETeXList exprs)
+
+        Sub deco ->
+            "_" ++ printETeXDeco deco
+
+        Super deco ->
+            "^" ++ printETeXDeco deco
+
+        Expr exprs ->
+            printETeXList exprs
+
+        AlphaNum str ->
+            str
+
+        LeftMathBrace ->
+            "\\{"
+
+        RightMathBrace ->
+            "\\}"
+
+        LeftParen ->
+            "("
+
+        RightParen ->
+            ")"
+
+        MathSmallSpace ->
+            "\\,"
+
+        MathMediumSpace ->
+            "\\;"
+
+        MathSpace ->
+            "\\ "
+
+        MacroName str ->
+            "\\" ++ str
+
+        FunctionName str ->
+            str
+
+        Param k ->
+            "#" ++ String.fromInt k
+
+        MathSymbols str ->
+            str
+
+        WS ->
+            " "
+
+        Comma ->
+            ","
+
+        FCall name args ->
+            name ++ "(" ++ printETeXArgList args ++ ")"
+
+        Text str ->
+            "\"" ++ str ++ "\""
+
+        GreekSymbol str ->
+            str
+
+
+printETeXDeco : Deco -> String
+printETeXDeco deco =
+    case deco of
+        DecoM expr ->
+            printETeX expr
+
+        DecoI k ->
+            String.fromInt k
+
+
+{-| Render a parsed Macro in ETeX form:
+
+  - `Macro "sin" []`                           → `"sin"`
+  - `Macro "sin" [Arg [x^2]]`                  → `"sin(x^2)"`
+  - `Macro "frac" [Arg [1], Arg [2]]`          → `"frac(1,2)"`
+
+If the body contains something other than `Arg` nodes, we cannot cleanly
+re-express the macro in ETeX form, so we fall back to LaTeX form.
+
+-}
+printETeXMacro : String -> List MathExpr -> String
+printETeXMacro name body =
+    case ( name, body ) of
+        ( "text", [ Arg [ AlphaNum str ] ] ) ->
+            -- Inverse of `Text str -> "\\text{" ++ str ++ "}"` in `print`.
+            -- Only applies to simple text (no backslash); other shapes fall
+            -- through to the default macro rendering below.
+            if String.contains "\\" str then
+                defaultPrintETeXMacro name body
+
+            else
+                "\"" ++ str ++ "\""
+
+        _ ->
+            defaultPrintETeXMacro name body
+
+
+defaultPrintETeXMacro : String -> List MathExpr -> String
+defaultPrintETeXMacro name body =
+    case body of
+        [] ->
+            name
+
+        _ ->
+            if List.all isArgNode body then
+                name
+                    ++ "("
+                    ++ (body |> List.map printETeXArgInner |> String.join ",")
+                    ++ ")"
+
+            else
+                "\\" ++ name ++ printETeXList body
+
+
+isArgNode : MathExpr -> Bool
+isArgNode expr =
+    case expr of
+        Arg _ ->
+            True
+
+        _ ->
+            False
+
+
+{-| When a Macro body is a list of `Arg` nodes, render each argument's
+interior (without the surrounding braces), so that `Arg [AlphaNum "1"]`
+prints as `"1"` rather than `"{1}"`.
+-}
+printETeXArgInner : MathExpr -> String
+printETeXArgInner expr =
+    case expr of
+        Arg exprs ->
+            printETeXList exprs
+
+        _ ->
+            printETeX expr
+
+
+{-| Mirror of `printArgList`, but recursing via `printETeX` so that any
+nested macros are also rendered in ETeX form.
+-}
+printETeXArgList : List MathExpr -> String
+printETeXArgList exprs =
+    case exprs of
+        [] ->
+            ""
+
+        [ PArg contents ] ->
+            printETeXList contents
+
+        (PArg contents) :: Comma :: rest ->
+            printETeXList contents ++ "," ++ printETeXArgList rest
+
+        (PArg contents) :: rest ->
+            printETeXList contents ++ printETeXArgList rest
+
+        other :: rest ->
+            printETeX other ++ printETeXArgList rest
 
 
 

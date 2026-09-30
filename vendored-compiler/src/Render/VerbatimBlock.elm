@@ -1,421 +1,1614 @@
 module Render.VerbatimBlock exposing (render)
 
+{-| Render verbatim blocks to HTML.
+-}
+
 import Dict exposing (Dict)
+import ETeX.Let
+import ETeX.Transform
 import Either exposing (Either(..))
-import Element exposing (Element)
-import Element.Background as Background
-import Element.Border as Border
-import Element.Font as Font
-import Element.Input
-import Generic.Acc exposing (Accumulator)
-import Generic.Language exposing (Expr(..), Expression, ExpressionBlock, Heading(..))
-import Html exposing (Html, text)
-import Render.CSVTable
-import Render.ChartV2
-import Render.Constants as Constants
-import Render.Graphics
-import Render.Helper
-import Render.IFrame
-import Render.Math
-import Render.Settings exposing (RenderSettings)
-import Render.Sync
-import Render.Theme
-import Render.Utility exposing (elementAttribute)
-import ScriptaV2.Msg exposing (MarkupMsg(..))
-import SyntaxHighlight exposing (gitHub, monokai, toBlockHtml, useTheme)
+import Html exposing (Html)
+import Html.Attributes as HA
+import Html.Events
+import Json.Decode
+import Parser
+import Parser.Expression
+import Render.Expression
+import Render.Math exposing (DisplayMode(..), mathText)
+import Render.Sizing
+import Render.Utility exposing (blockIdAndStyle, idAttr)
+import SyntaxHighlight
+import V3.Types exposing (Accumulator, CompilerParameters, ExpressionBlock, MathMacroDict, Msg(..), Theme(..))
 
 
-render : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> ExpressionBlock -> Element MarkupMsg
-render count acc settings attrs block =
-    case block.body of
-        Right _ ->
-            Element.none
+{-| Render a verbatim block by name.
+-}
+render : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+render params acc name block children =
+    case Dict.get name blockDict of
+        Just renderer ->
+            renderer params acc name block children
 
-        Left str ->
-            case block.heading of
-                Verbatim functionName_ ->
-                    let
-                        functionName =
-                            if functionName_ == "table" then
-                                "textarray"
-
-                            else
-                                functionName_
-                    in
-                    case Dict.get functionName verbatimDict of
-                        Nothing ->
-                            Render.Helper.noSuchVerbatimBlock functionName str
-
-                        Just f ->
-                            Element.el
-                                ([ Render.Helper.selectedColor block.meta.id settings
-                                 , Render.Helper.htmlId block.meta.id
-                                 ]
-                                    ++ attrs
-                                )
-                                (f count acc settings attrs block)
-
-                _ ->
-                    Element.none
+        Nothing ->
+            renderDefault params acc name block children
 
 
-verbatimDict : Dict String (Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> ExpressionBlock -> Element MarkupMsg)
-verbatimDict =
+{-| Dictionary of verbatim block renderers.
+-}
+blockDict : Dict String (CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg))
+blockDict =
     Dict.fromList
-        [ ( "math", Render.Math.displayedMath )
-        , ( "chem", Render.Math.chem )
-        , ( "equation", Render.Math.equation )
-        , ( "aligned", Render.Math.aligned )
-        , ( "array", Render.Math.array )
-        , ( "textarray", Render.Math.textarray )
-        , ( "table", Render.Math.textarray )
+        [ ( "math", renderEquation )
+        , ( "equation", renderEquation )
+        , ( "math", renderEquation )
+        , ( "aligned", renderAligned )
         , ( "code", renderCode )
         , ( "verse", renderVerse )
-        , ( "verbatim", renderVerbatim )
-        , ( "settings", Render.Helper.renderNothing )
-
-        -- , ( "tabular", Render.Tabular.render )
+        , ( "mathmacros", renderMathMacros )
+        , ( "textmacros", renderTextMacros )
+        , ( "datatable", renderDataTable )
+        , ( "chart", renderChart )
+        , ( "svg", renderSvg )
+        , ( "quiver", renderQuiver )
+        , ( "tikz", renderTikz )
+        , ( "image", renderImage )
+        , ( "iframe", renderIframe )
         , ( "load", renderLoad )
-        , ( "load-data", Render.Helper.renderNothing )
-        , ( "hide", Render.Helper.renderNothing )
-        , ( "texComment", Render.Helper.renderNothing )
-        , ( "docinfo", Render.Helper.renderNothing )
-        , ( "mathmacros", Render.Helper.renderNothing )
-        , ( "textmacros", Render.Helper.renderNothing )
-        , ( "csvtable", Render.CSVTable.render )
-        , ( "chart", Render.ChartV2.render )
-        , ( "svg", Render.Graphics.svg )
-        , ( "quiver", Render.Graphics.quiver )
-        , ( "image", Render.Graphics.image2 )
-        , ( "tikz", Render.Graphics.tikz )
-        , ( "load-files", Render.Helper.renderNothing )
-        , ( "include", Render.Helper.renderNothing )
-        , ( "setup", Render.Helper.renderNothing )
-        , ( "iframe", Render.IFrame.render )
+
+        -- Chemistry
+        , ( "chem", renderChem )
+
+        -- Arrays/tables
+        , ( "array", renderArray )
+        , ( "textarray", renderTextArray )
+        , ( "csvtable", renderCsvTable )
+
+        -- Raw verbatim
+        , ( "verbatim", renderVerbatim )
+
+        -- Book/document info
+        , ( "book", renderBook )
+        , ( "article", renderArticle )
+
+        -- No-op/hidden blocks
+        , ( "settings", renderNothing )
+        , ( "load-data", renderNothing )
+        , ( "hide", renderNothing )
+        , ( "texComment", renderNothing )
+        , ( "docinfo", renderNothing )
+        , ( "load-files", renderNothing )
+        , ( "include", renderNothing )
+        , ( "setup", renderNothing )
         ]
 
 
-renderLoadData : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> ExpressionBlock -> Element MarkupMsg
-renderLoadData _ _ _ _ block =
-    Element.none
+{-| Default rendering for unknown verbatim block names.
+-}
+renderDefault : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderDefault params _ name block _ =
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "margin-bottom" (Render.Sizing.paragraphSpacingPx params.sizing)
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync block.meta
+        )
+        [ Html.span [ HA.style "font-weight" "bold", HA.style "color" "purple", HA.style "pointer-events" "none" ]
+            [ Html.text ("[verbatim:" ++ name ++ "]") ]
+        , Html.pre [ HA.style "margin" "0.5em 0", HA.style "pointer-events" "none" ]
+            [ Html.text (getVerbatimContent block) ]
+        ]
+    ]
 
 
-setup : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> ExpressionBlock -> Element MarkupMsg
-setup _ _ _ _ block =
-    Element.none
-
-
-renderLoad : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> ExpressionBlock -> Element MarkupMsg
-renderLoad _ _ _ _ block =
+{-| Get verbatim content from block body.
+-}
+getVerbatimContent : ExpressionBlock -> String
+getVerbatimContent block =
     case block.body of
-        Left url ->
-            let
-                tag =
-                    block.args |> List.head |> Maybe.withDefault "default"
-            in
-            Element.Input.button []
-                { onPress = Just (LoadFile tag url)
-                , label =
-                    Element.el
-                        [ Border.rounded 12
-                        , Element.mouseDown [ Background.color (Element.rgb 0.4 0.2 0.9) ]
-                        , Background.color (Element.rgb 0 0 0.7)
-                        , Font.color (Element.rgb 1 1 1)
-                        , Element.padding 12
-                        ]
-                        (Element.text ("load " ++ url ++ " into " ++ tag))
-                }
+        Left content ->
+            content
 
         Right _ ->
-            Element.none
+            ""
 
 
-renderCode : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> ExpressionBlock -> Element MarkupMsg
-renderCode count acc settings attr block =
+
+-- MATH BLOCKS
+
+
+{-| Render a display math block (unnumbered).
+
+    | math
+    \int_0^1 x^n dx = \frac{1}{n+1}
+
+-}
+renderMath : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderMath params acc _ block _ =
     let
-        language =
-            case List.head block.args of
-                Just arg ->
-                    if arg == "numbered" then
-                        "python"
-
-                    else
-                        arg
-
-                Nothing ->
-                    "plain"
-
-        -- TODO:  compute in terms of the theme without magic numbers
-        bgColor =
-            case settings.theme of
-                Render.Theme.Dark ->
-                    -- Element.rgb 0.298 0.314 0.329
-                    Render.Settings.toElementColor Render.Settings.darkTheme.codeBackground
-
-                Render.Theme.Light ->
-                    Render.Settings.toElementColor Render.Settings.lightTheme.codeBackground
+        content =
+            getVerbatimContent block
+                |> applyMathMacros acc.mathMacroDict
     in
-    Element.column
-        ([ Background.color Constants.syncHighlightColor
-         , Element.paddingXY 18 12
-         , Element.width (Element.px settings.width)
-         , Element.scrollbarX
-         , Font.size 13
-         ]
-            ++ Render.Sync.attributes settings block
-            ++ [ Background.color bgColor ]
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "text-align" "center"
+               , HA.style "margin" "1em 0"
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync (.meta block)
         )
-        (viewCodeWithHighlight settings language (Render.Utility.getVerbatimContent block))
-
-
-viewCodeWithHighlight : RenderSettings -> String -> String -> List (Element msg)
-viewCodeWithHighlight settings language code =
-    [ case settings.theme of
-        Render.Theme.Dark ->
-            darkCSS2
-
-        Render.Theme.Light ->
-            lightCSS2
-    , viewCodeWithHighlight_ language code |> Element.html
+        [ Html.div [ HA.style "pointer-events" "none" ]
+            [ mathText params.editCount { id = block.meta.id, begin = block.meta.contentBegin, end = block.meta.contentEnd } DisplayMathMode content ]
+        ]
     ]
 
 
-ghTheme =
-    ".elmsh {color: #24292e;background: #eeeeee;line-height: 1.5;}.elmsh-hl {background: #fffbdd;}.elmsh-add {background: #eaffea;}.elmsh-del {background: #ffecec;}.elmsh-comm {color: #969896;}.elmsh1 {color: #005cc5;}.elmsh2 {color: #df5000;}.elmsh3 {color: #d73a49;}.elmsh4 {color: #0086b3;}.elmsh5 {color: #63a35c;}.elmsh6 {color: #005cc5;}.elmsh7 {color: #795da3;}"
+{-| Render a numbered equation block.
 
+    | equation
+    E = mc^2
 
-ghTheme2 =
-    ".elmsh {color: #24292e;background: #EDF0FA;line-height: 1.5;}.elmsh-hl {background: #d6dbe8;}.elmsh-add {background: #d4f0d8;}.elmsh-del{background: #f5dde0;}.elmsh-comm {color: #6a737d;}.elmsh1 {color: #0051b8;}.elmsh2 {color: #d14800;}.elmsh3 {color: #cb2e42;}.elmsh4 {color:#0079a3;}.elmsh5 {color: #5a9553;}.elmsh6 {color: #0051b8;}.elmsh7 {color: #6f5397;}"
+Supports alignment with & for multi-line equations:
 
+    | equation
+    a &= b + c \\
+    &= d
 
-ghTheme3 =
-    ".elmsh {color: #1f2328;background: #d5d8e1;line-height: 1.5;}.elmsh-hl {background: #c0c5d1;}.elmsh-add {background: #bfdbc3;}.elmsh-del{background: #dcc7ca;}.elmsh-comm {color: #5f6770;}.elmsh1 {color: #0049a5;}.elmsh2 {color: #bc4000;}.elmsh3 {color: #b6293b;}.elmsh4 {color:#006d92;}.elmsh5 {color: #50854a;}.elmsh6 {color: #0049a5;}.elmsh7 {color: #644b88;}"
-
-
-
---darkTheme =
---    ".elmsh {color: #e1e4e8;background: #2E3337;line-height: 1.5;}.elmsh-hl {background: #3a3d41;}.elmsh-add {background: #28a745;}.elmsh-del {background: #d73a49;}.elmsh-comm {color:\n  #6a737d;}.elmsh1 {color: #79b8ff;}.elmsh2 {color: #ffab70;}.elmsh3 {color: #f97583;}.elmsh4 {color: #79b8ff;}.elmsh5 {color: #85e89d;}.elmsh6 {color: #79b8ff;}.elmsh7 {color: #b392f0;}"
--- darkTheme =
---  ".elmsh {color: #e4e7ea;background: #3d4145;line-height: 1.5;}.elmsh-hl {background: #4b4e52;}.elmsh-add {background: #42b15c;}.elmsh-del {background: #dc5460;}.elmsh-comm {color: #7b848a;}.elmsh1 {color: #8dc3ff;}.elmsh2 {color: #ffb57d;}.elmsh3 {color: #fa8c95;}.elmsh4 {color:#8dc3ff;}.elmsh5 {color: #95eca7;}.elmsh6 {color: #8dc3ff;}.elmsh7 {color: #c0a1f3;}"
-
-
-darkTheme =
-    ".elmsh {color: #e7eaec;background: #4c5054;line-height: 1.5;}.elmsh-hl {background: #5c5f63;}.elmsh-add {background: #5cba73;}.elmsh-del{background: #e16e77;}.elmsh-comm {color: #8c9399;}.elmsh1 {color: #a1cdff;}.elmsh2 {color: #ffbf8a;}.elmsh3 {color: #fb9fa7;}.elmsh4 {color:#a1cdff;}.elmsh5 {color: #a5f0b8;}.elmsh6 {color: #a1cdff;}.elmsh7 {color: #cbb0f6;}"
-
-
-lightCSS2 : Element msg
-lightCSS2 =
-    Element.html <|
-        Html.node "style"
-            []
-            [ Html.text ghTheme3 ]
-
-
-darkCSS2 : Element msg
-darkCSS2 =
-    Element.html <|
-        Html.node "style"
-            []
-            [ Html.text darkTheme ]
-
-
-viewCodeWithHighlight_ : String -> String -> Html msg
-viewCodeWithHighlight_ language code_ =
+-}
+renderEquation : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderEquation params acc _ block _ =
     let
-        lines_ =
-            String.lines code_
+        raw =
+            getVerbatimContent block
 
-        code =
-            case List.head lines_ of
-                Just firstLine ->
-                    if String.left 2 firstLine == "  " then
-                        List.map (\line -> String.dropLeft 2 line) lines_
-                            |> String.join "\n"
+        -- Resolve LET/IN blocks first, before line-by-line processing
+        reduced =
+            ETeX.Let.reduce raw
 
-                    else
-                        code_
+        -- Process content: if it contains &, handle alignment
+        -- But first check if & only appears inside environments (e.g. pmatrix)
+        processedContent =
+            if hasTopLevelAmpersand reduced then
+                wrapInAligned (processAlignedLines acc.mathMacroDict reduced)
 
-                Nothing ->
-                    code_
+            else
+                applyMathMacros acc.mathMacroDict reduced
+
+        content =
+            processedContent
+
+        -- Get equation number from block properties (set by transformBlock when label is present)
+        equationNumber =
+            Dict.get "equation-number" block.properties |> Maybe.withDefault ""
     in
-    case language of
-        "python" ->
-            code
-                |> SyntaxHighlight.python
-                |> Result.map (toBlockHtml (Just 1))
-                |> Result.withDefault (text code)
-
-        "javascript" ->
-            code
-                |> SyntaxHighlight.javascript
-                |> Result.map (toBlockHtml (Just 1))
-                |> Result.withDefault (text code)
-
-        "elm" ->
-            code
-                |> SyntaxHighlight.elm
-                |> Result.map (toBlockHtml (Just 1))
-                |> Result.withDefault (text code)
-
-        "noLang" ->
-            code
-                |> SyntaxHighlight.elm
-                |> Result.map (toBlockHtml (Just 1))
-                |> Result.withDefault (text code)
-
-        _ ->
-            code
-                |> SyntaxHighlight.noLang
-                |> Result.map (toBlockHtml (Just 1))
-                |> Result.withDefault (text code)
-
-
-renderVerbatim : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> ExpressionBlock -> Element MarkupMsg
-renderVerbatim _ _ settings attrs block =
-    Element.column
-        ([ Font.family
-            [ Font.typeface "Inconsolata"
-            , Font.monospace
-            ]
-         , Element.spacing 8
-         , Background.color Constants.syncHighlightColor
-         , Element.paddingEach { left = 24, right = 0, top = 0, bottom = 0 }
-         , Font.size 13
-         ]
-            ++ attrs
-            ++ Render.Sync.attributes settings block
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "display" "flex"
+               , HA.style "justify-content" "center"
+               , HA.style "align-items" "center"
+               , HA.style "margin" "1em 0"
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync (.meta block)
         )
-        (List.map (renderVerbatimLine "none") (String.lines (String.trim (Render.Utility.getVerbatimContent block))))
+        [ Html.div [ HA.style "flex" "1" ] []
+        , Html.div [ HA.style "pointer-events" "none" ]
+            [ mathText params.editCount { id = block.meta.id, begin = block.meta.contentBegin, end = block.meta.contentEnd } DisplayMathMode content ]
+        , Html.div
+            [ HA.style "flex" "1"
+            , HA.style "text-align" "right"
+            , HA.style "padding-right" "1em"
+            , HA.style "pointer-events" "none"
+            ]
+            [ Html.text
+                (if equationNumber /= "" then
+                    "(" ++ equationNumber ++ ")"
+
+                 else
+                    ""
+                )
+            ]
+        ]
+    ]
 
 
-renderVerbatimLine : String -> String -> Element msg
-renderVerbatimLine lang str =
+{-| Render an aligned math block (unnumbered, multi-line).
+
+    | aligned
+    a &= b + c \\
+    &= d + e
+
+-}
+renderAligned : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderAligned params acc _ block _ =
     let
-        spacer s =
-            let
-                n =
-                    String.length s - String.length (String.trimLeft s)
-            in
-            Element.paddingEach { top = 0, bottom = 0, left = n * 8, right = 0 }
+        content =
+            getVerbatimContent block
+                |> processAlignedLines acc.mathMacroDict
+                |> wrapInAligned
     in
-    if String.trim str == "" then
-        Element.row [ spacer str, Element.spacing 12 ] [ Element.el [ Element.height (Element.px 11), Font.size 13 ] (Element.text "") ]
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "text-align" "center"
+               , HA.style "margin" "1em 0"
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync (.meta block)
+        )
+        [ Html.div [ HA.style "pointer-events" "none" ]
+            [ mathText params.editCount { id = block.meta.id, begin = block.meta.contentBegin, end = block.meta.contentEnd } DisplayMathMode content ]
+        ]
+    ]
 
-    else
-        Element.row [ spacer str, Element.spacing 12 ] [ Element.el [ Element.height (Element.px 22), Font.size 13 ] (Element.text str) ]
+
+wrapInAligned : String -> String
+wrapInAligned content =
+    "\\begin{aligned}\n" ++ content ++ "\n\\end{aligned}"
 
 
-renderIndexedVerbatimLine : Int -> String -> String -> Element msg
-renderIndexedVerbatimLine k lang str_ =
+{-| Process aligned math content line-by-line.
+
+Splits into lines, strips trailing backslashes, applies ETeX transformation
+to each line individually, then rejoins with `\\\\` separators.
+This avoids two problems with processing the whole string at once:
+
+1.  Line breaks are lost when evalStr concatenates parsed results
+2.  Trailing `\\\\` causes the ETeX parser to fail
+
+-}
+processAlignedLines : MathMacroDict -> String -> String
+processAlignedLines macroDict content =
     let
-        str =
-            String.replace "\\bt" "`" str_
+        stripTrailingBackslashes line =
+            if String.endsWith "\\\\" line then
+                String.dropRight 2 line |> String.trimRight
 
-        index k_ =
-            Element.el [ Element.paddingEach { top = 0, bottom = 8, left = 0, right = 0 } ] (Element.text <| String.fromInt (k_ + 1))
-    in
-    if String.trim str == "" then
-        Element.row [ Element.spacing 12 ] [ index k, Element.el [ Element.height (Element.px 11), Font.size 13 ] (Element.text "") ]
-
-    else if lang == "plain" then
-        Element.row [ Element.spacing 12 ] [ index k, Element.el [ Element.height (Element.px 22), Font.size 13 ] (Element.text str) ]
-
-    else
-        Element.row [ Element.spacing 12 ] [ index k, Element.paragraph [ Element.height (Element.px 22), Font.size 13 ] (renderedColoredLine lang str) ]
-
-
-renderVerse : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> ExpressionBlock -> Element MarkupMsg
-renderVerse _ _ settings attrs block =
-    let
-        lines_ =
-            String.lines (Render.Utility.getVerbatimContent block)
+            else
+                line
 
         lines =
-            -- normalize to properly render an indented block of verse
-            -- often  used when there are "blank" lines in the verse,
-            -- meaning lines with leading spaces (2 spaces)
-            case List.head lines_ of
-                Just firstLine ->
-                    if String.left 2 firstLine == "  " then
-                        List.map (\line -> String.dropLeft 2 line) lines_
+            content
+                |> String.lines
+                |> List.map String.trim
+                |> List.filter (not << String.isEmpty)
+                |> collapseEnvironments
+                |> List.map (stripTrailingBackslashes >> applyMathMacros macroDict)
+    in
+    case List.reverse lines of
+        [] ->
+            ""
+
+        lastLine :: restReversed ->
+            (List.reverse restReversed |> List.map (\line -> line ++ " \\\\"))
+                ++ [ lastLine ]
+                |> String.join "\n"
+
+
+{-| Check if raw content has & characters outside of \\begin{...}...\\end{...} environments.
+-}
+hasTopLevelAmpersand : String -> Bool
+hasTopLevelAmpersand raw =
+    raw
+        |> String.lines
+        |> List.map String.trim
+        |> List.filter (not << String.isEmpty)
+        |> collapseEnvironments
+        |> List.filter (not << isCollapsedEnvironment)
+        |> List.any (String.contains "&")
+
+
+{-| Check if a line is a fully collapsed environment (starts with \\begin and ends with \\end).
+-}
+isCollapsedEnvironment : String -> Bool
+isCollapsedEnvironment line =
+    case extractBeginEnv line of
+        Just name ->
+            String.endsWith ("\\end{" ++ name ++ "}") line
+
+        Nothing ->
+            False
+
+
+{-| Collapse multi-line LaTeX environments into single lines.
+
+For example, lines like:
+
+    \\begin{pmatrix}
+    2 & 1 \\\\
+    1 & 2
+    \\end{pmatrix}
+
+become a single line:
+
+    \\begin{pmatrix} 2 & 1 \\\\ 1 & 2 \\end{pmatrix}
+
+This preserves the environment structure when the surrounding code
+processes lines individually for aligned-equation formatting.
+
+-}
+collapseEnvironments : List String -> List String
+collapseEnvironments lines =
+    collapseEnvironmentsHelper lines [] Nothing []
+
+
+collapseEnvironmentsHelper : List String -> List String -> Maybe String -> List String -> List String
+collapseEnvironmentsHelper remaining accumulated envName result =
+    case remaining of
+        [] ->
+            -- Flush any accumulated lines if we hit the end while inside an environment
+            case envName of
+                Nothing ->
+                    List.reverse result
+
+                Just _ ->
+                    List.reverse (String.join " " (List.reverse accumulated) :: result)
+
+        line :: rest ->
+            case envName of
+                Nothing ->
+                    -- Not inside an environment: check if this line starts one
+                    case extractBeginEnv line of
+                        Just name ->
+                            if String.contains ("\\end{" ++ name ++ "}") line then
+                                -- Environment opens and closes on same line, pass through
+                                collapseEnvironmentsHelper rest [] Nothing (line :: result)
+
+                            else
+                                -- Start accumulating
+                                collapseEnvironmentsHelper rest [ line ] (Just name) result
+
+                        Nothing ->
+                            -- Regular line, pass through
+                            collapseEnvironmentsHelper rest [] Nothing (line :: result)
+
+                Just name ->
+                    -- Inside an environment: accumulate until we see \end{name}
+                    if String.contains ("\\end{" ++ name ++ "}") line then
+                        -- End of environment: collapse all accumulated lines into one
+                        -- But check if there's another \begin{} after the \end{} on the same line
+                        let
+                            endTag =
+                                "\\end{" ++ name ++ "}"
+
+                            ( beforeEnd, afterEnd ) =
+                                splitOnFirst endTag line
+
+                            envLine =
+                                beforeEnd ++ endTag
+
+                            collapsed =
+                                String.join " " (List.reverse (envLine :: accumulated))
+
+                            newRemaining =
+                                if String.isEmpty (String.trim afterEnd) then
+                                    rest
+
+                                else
+                                    String.trim afterEnd :: rest
+                        in
+                        collapseEnvironmentsHelper newRemaining [] Nothing (collapsed :: result)
 
                     else
-                        lines_
+                        -- Still inside, keep accumulating
+                        collapseEnvironmentsHelper rest (line :: accumulated) envName result
 
-                Nothing ->
-                    lines_
-    in
-    Element.column ([ Element.spacing 8 ] ++ Render.Sync.attributes settings block)
-        [ Render.Helper.noteFromPropertyKey "title" [ Render.Helper.leftPadding 12, Font.bold ] block
-        , Element.column
-            (verbatimBlockAttributes block.meta.lineNumber
-                block.meta.numberOfLines
-                [ Element.paddingEach { left = 12, right = 0, top = 0, bottom = 0 } ]
-                ++ attrs
+
+{-| Extract the environment name from a \\begin{name} line, if present.
+-}
+extractBeginEnv : String -> Maybe String
+extractBeginEnv line =
+    if String.contains "\\begin{" line then
+        let
+            afterBegin =
+                line
+                    |> String.split "\\begin{"
+                    |> List.drop 1
+                    |> List.head
+                    |> Maybe.withDefault ""
+        in
+        case String.split "}" afterBegin of
+            name :: _ ->
+                if String.isEmpty name then
+                    Nothing
+
+                else
+                    Just name
+
+            [] ->
+                Nothing
+
+    else
+        Nothing
+
+
+{-| Split a string on the first occurrence of a separator.
+Returns ( before, after ) where the separator is excluded from both.
+-}
+splitOnFirst : String -> String -> ( String, String )
+splitOnFirst sep str =
+    case String.indexes sep str of
+        idx :: _ ->
+            ( String.left idx str
+            , String.dropLeft (idx + String.length sep) str
             )
-            (List.map (renderVerbatimLine "plain") lines)
-        , Render.Helper.noteFromPropertyKey "source" [ Render.Helper.leftPadding 12 ] block
-        ]
+
+        [] ->
+            ( str, "" )
 
 
-note block =
-    case Dict.get "note" block.properties of
-        Nothing ->
-            Element.none
+{-| Transform ETeX notation to LaTeX using ETeX.Transform.evalStr.
 
-        Just note_ ->
-            Element.paragraph [] [ Element.text note_ ]
+Converts notation like `int_0^2`, `frac(1,n+1)` to `\int_0^2`, `\frac{1}{n+1}`.
+Also expands user-defined macros from mathmacros blocks.
 
-
-verbatimBlockAttributes lineNumber numberOfLines attrs =
-    [ Render.Sync.rightToLeftSyncHelper lineNumber numberOfLines
-    , Render.Utility.idAttributeFromInt lineNumber
-    ]
-        ++ attrs
+-}
+applyMathMacros : MathMacroDict -> String -> String
+applyMathMacros macroDict content =
+    ETeX.Transform.evalStr macroDict content
 
 
 
--- HELPERS
+-- CODE BLOCKS
 
 
-renderedColoredLine lang str =
-    str
-        |> String.words
-        |> List.map (renderedColoredWord lang)
+{-| Render a code block with syntax highlighting.
 
+    | code python
+    def hello():
+        print("Hello!")
 
-renderedColoredWord lang word =
-    case lang of
-        "elm" ->
-            case Dict.get word elmDict of
-                Just color ->
-                    Element.el [ color ] (Element.text (word ++ " "))
+If a supported language is specified as an argument, syntax highlighting
+is applied using elm-syntax-highlight. Supported languages: elm, javascript,
+xml, css, python, sql, json, nix, kotlin, go.
 
+If no language or an unsupported language is given, falls back to plain
+monospace rendering.
+
+Properties:
+
+  - linenumbers: Show line numbers (presence enables, e.g. `linenumbers:yes`)
+  - indent: Left/right margin indentation in em units
+
+-}
+renderCode : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderCode params _ _ block _ =
+    let
+        language =
+            List.head block.args |> Maybe.withDefault ""
+
+        content =
+            getVerbatimContent block
+
+        indentation =
+            case Dict.get "indent" block.properties of
                 Nothing ->
-                    Element.el [] (Element.text (word ++ " "))
+                    "0em"
+
+                Just k ->
+                    k ++ "em"
+
+        showLineNumbers =
+            Dict.member "linenumbers" block.properties
+
+        lineNumberStart =
+            if showLineNumbers then
+                Just 1
+
+            else
+                Nothing
+
+        theme =
+            case params.theme of
+                Light ->
+                    SyntaxHighlight.gitHub
+
+                Dark ->
+                    SyntaxHighlight.monokai
+    in
+    case languageParser language of
+        Just parser ->
+            case parser content of
+                Ok hcode ->
+                    [ Html.div
+                        (blockIdAndStyle block
+                            ++ [ HA.style "margin" "1em 0"
+                               , HA.style "cursor" "pointer"
+                               ]
+                            ++ Render.Utility.rlBlockSync block.meta
+                        )
+                        ([ SyntaxHighlight.useTheme theme
+                         ]
+                            ++ (if showLineNumbers then
+                                    [ lineNumberCss ]
+
+                                else
+                                    []
+                               )
+                            ++ [ Html.div
+                                    [ HA.style "margin-left" indentation
+                                    , HA.style "margin-right" indentation
+                                    , HA.style "border-radius" "4px"
+                                    , HA.style "overflow-x" "auto"
+                                    , HA.style "font-size" (Render.Sizing.codeSize params.sizing)
+                                    , HA.style "pointer-events" "none"
+                                    ]
+                                    [ SyntaxHighlight.toBlockHtml lineNumberStart hcode ]
+                               ]
+                        )
+                    ]
+
+                Err _ ->
+                    renderCodePlain params block content indentation
+
+        Nothing ->
+            renderCodePlain params block content indentation
+
+
+{-| Plain code rendering fallback for unsupported or missing languages.
+-}
+renderCodePlain : CompilerParameters -> ExpressionBlock -> String -> String -> List (Html Msg)
+renderCodePlain params block content indentation =
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "margin" "1em 0"
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync block.meta
+        )
+        [ Html.pre
+            [ HA.style "background-color"
+                (case params.theme of
+                    Light ->
+                        "#f5f5f5"
+
+                    Dark ->
+                        "#1e1e1e"
+                )
+            , HA.style "padding" "1em"
+            , HA.style "margin-left" indentation
+            , HA.style "margin-right" indentation
+            , HA.style "border-radius" "4px"
+            , HA.style "overflow-x" "auto"
+            , HA.style "font-family" "monospace"
+            , HA.style "font-size" (Render.Sizing.codeSize params.sizing)
+            , HA.style "pointer-events" "none"
+            ]
+            [ Html.code []
+                [ Html.text content ]
+            ]
+        ]
+    ]
+
+
+{-| Map a language name string to its SyntaxHighlight parser function.
+Returns Nothing for unsupported or empty language strings.
+-}
+languageParser : String -> Maybe (String -> Result (List Parser.DeadEnd) SyntaxHighlight.HCode)
+languageParser lang =
+    case String.toLower lang of
+        "elm" ->
+            Just SyntaxHighlight.elm
+
+        "javascript" ->
+            Just SyntaxHighlight.javascript
+
+        "js" ->
+            Just SyntaxHighlight.javascript
+
+        "xml" ->
+            Just SyntaxHighlight.xml
+
+        "html" ->
+            Just SyntaxHighlight.xml
+
+        "css" ->
+            Just SyntaxHighlight.css
+
+        "python" ->
+            Just SyntaxHighlight.python
+
+        "sql" ->
+            Just SyntaxHighlight.sql
+
+        "json" ->
+            Just SyntaxHighlight.json
+
+        "nix" ->
+            Just SyntaxHighlight.nix
 
         _ ->
-            Element.el [] (Element.text (word ++ " "))
+            Nothing
 
 
-orange =
-    Font.color (Element.rgb255 227 81 18)
-
-
-green =
-    Font.color (Element.rgb255 11 158 26)
-
-
-cyan =
-    Font.color (Element.rgb255 11 143 158)
-
-
-elmDict =
-    Dict.fromList
-        [ ( "type", orange )
-        , ( "LB", green )
-        , ( "RB", green )
-        , ( "S", green )
-        , ( "String", green )
-        , ( "Meta", cyan )
+{-| CSS for displaying line numbers on `.elmsh-line` elements.
+The elm-syntax-highlight library sets `data-elmsh-lc` on each line div
+but does not include the CSS to render it.
+-}
+lineNumberCss : Html msg
+lineNumberCss =
+    Html.node "style"
+        []
+        [ Html.text
+            (String.join "\n"
+                [ ".elmsh-line::before {"
+                , "  content: attr(data-elmsh-lc);"
+                , "  display: inline-block;"
+                , "  text-align: right;"
+                , "  width: 2.5em;"
+                , "  margin-right: 1em;"
+                , "  padding-right: 0.5em;"
+                , "  border-right: 1px solid rgba(128, 128, 128, 0.4);"
+                , "  color: rgba(128, 128, 128, 0.6);"
+                , "  user-select: none;"
+                , "}"
+                ]
+            )
         ]
+
+
+
+-- VERSE
+
+
+{-| Render a verse/poetry block preserving line breaks.
+
+    | verse
+    Roses are red,
+    Violets are blue,
+    Sugar is sweet,
+    And so are you.
+
+-}
+renderVerse : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderVerse params acc str block _ =
+    let
+        content =
+            getVerbatimContent block
+
+        lines =
+            String.split "\n" content
+
+        parsedContent : List (List V3.Types.Expression)
+        parsedContent =
+            List.indexedMap (\k -> Parser.Expression.parse k) lines
+
+        htmlContent : List (Html Msg)
+        htmlContent =
+            List.map (Render.Expression.renderList params acc >> Html.div []) parsedContent
+    in
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "margin" "1em 2em"
+
+               --, HA.style "font-style" "italic"
+               , HA.style "white-space" "pre-wrap"
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync block.meta
+        )
+        [ Html.div [ HA.style "pointer-events" "none" ] htmlContent ]
+    ]
+
+
+
+-- MACRO DEFINITIONS
+
+
+{-| Define math macros for use in math blocks. Hidden in output.
+
+    | mathmacros
+    \newcommand{\R}{\mathbb{R}}
+    \newcommand{\norm}[1]{\left\| #1 \right\|}
+
+-}
+renderMathMacros : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderMathMacros _ _ _ block _ =
+    [ Html.div [ idAttr block.meta.id, HA.style "display" "none" ] [] ]
+
+
+{-| Define text macros for use in document. Hidden in output.
+
+    | textmacros
+    \newcommand{\version}{2.0}
+
+-}
+renderTextMacros : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderTextMacros _ _ _ block _ =
+    [ Html.div [ idAttr block.meta.id, HA.style "display" "none" ] [] ]
+
+
+
+-- DATA AND CHARTS
+
+
+{-| Render raw data in a preformatted block.
+
+    | datatable
+    x, y, z
+    1, 2, 3
+    4, 5, 6
+
+-}
+renderDataTable : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderDataTable params _ _ block _ =
+    let
+        content =
+            getVerbatimContent block
+    in
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "margin" "1em 0"
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync block.meta
+        )
+        [ Html.pre [ HA.style "font-family" "monospace", HA.style "pointer-events" "none" ]
+            [ Html.text content ]
+        ]
+    ]
+
+
+{-| Render a chart (placeholder, requires external JS library).
+
+    | chart
+    type: bar
+    data: ...
+
+-}
+renderChart : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderChart params _ _ block _ =
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.class "chart-placeholder"
+               , HA.style "margin" "1em 0"
+               , HA.style "min-height" "200px"
+               , HA.style "border" "1px dashed #ccc"
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync block.meta
+        )
+        [ Html.span [ HA.style "pointer-events" "none" ] [ Html.text "[Chart]" ] ]
+    ]
+
+
+
+-- GRAPHICS
+
+
+{-| Render inline SVG content (placeholder, requires JS integration).
+
+    | svg
+    <svg width="100" height="100">
+      <circle cx="50" cy="50" r="40" fill="red" />
+    </svg>
+
+-}
+renderSvg : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderSvg params _ _ block _ =
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "text-align" "center"
+               , HA.style "margin" "1em 0"
+               , HA.class "svg-container"
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync block.meta
+        )
+        [ Html.pre
+            [ HA.style "font-family" "monospace"
+            , HA.style "font-size" (Render.Sizing.codeSize params.sizing)
+            , HA.style "pointer-events" "none"
+            ]
+            [ Html.text "[SVG content - requires JS integration]" ]
+        ]
+    ]
+
+
+{-| Render a Quiver commutative diagram.
+
+The image URL comes from the `image` property (without protocol prefix).
+
+Properties:
+
+  - image: Image path (<https://> is prepended automatically)
+  - width: Image width in pixels (default: panel width)
+  - caption: Caption text displayed below the diagram
+
+Example:
+
+    | quiver
+    | image:imagedelivery.net/example/public
+    | width:400
+    | caption:Commutative diagram
+    ---
+    \[\begin{tikzcd} A \arrow[r] & B \end{tikzcd}\]
+
+-}
+renderQuiver : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderQuiver params _ _ block _ =
+    let
+        url =
+            Dict.get "image" block.properties
+                |> Maybe.map (\path -> "https://" ++ path)
+                |> Maybe.withDefault ""
+
+        width =
+            case Dict.get "width" block.properties of
+                Nothing ->
+                    String.fromInt params.width ++ "px"
+
+                Just w ->
+                    case String.toInt w of
+                        Just _ ->
+                            w ++ "px"
+
+                        Nothing ->
+                            String.fromInt params.width ++ "px"
+
+        caption =
+            Dict.get "caption" block.properties
+
+        captionElement =
+            case caption of
+                Just cap ->
+                    [ Html.div
+                        [ HA.style "font-size" "0.9em"
+                        , HA.style "font-style" "italic"
+                        , HA.style "margin-top" "0.5em"
+                        , HA.style "color" "#555"
+                        ]
+                        [ Html.text cap ]
+                    ]
+
+                Nothing ->
+                    []
+
+        isExpandable =
+            List.member "expandable" block.args
+
+        imageElement =
+            Html.img
+                [ HA.src url
+                , HA.style "max-width" width
+                , HA.style "pointer-events" "none"
+                ]
+                []
+
+        imageDisplay =
+            if isExpandable then
+                Html.span
+                    [ HA.style "cursor" "zoom-in"
+                    , HA.style "display" "inline-block"
+                    , Html.Events.stopPropagationOn "click"
+                        (Json.Decode.succeed ( ExpandImage url, True ))
+                    ]
+                    [ imageElement ]
+
+            else
+                imageElement
+    in
+    if url == "" then
+        [ Html.div
+            (blockIdAndStyle block
+                ++ [ HA.style "margin" "1em 0"
+                   , HA.style "cursor" "pointer"
+                   ]
+                ++ Render.Utility.rlBlockSync block.meta
+            )
+            [ Html.span [ HA.style "pointer-events" "none" ] [ Html.text "[Quiver: no image URL]" ] ]
+        ]
+
+    else
+        [ Html.div
+            (blockIdAndStyle block
+                ++ [ HA.style "text-align" "center"
+                   , HA.style "margin" "1em 0"
+                   , HA.style "cursor" "pointer"
+                   ]
+                ++ Render.Utility.rlBlockSync block.meta
+            )
+            (imageDisplay
+                :: captionElement
+            )
+        ]
+
+
+{-| Render a TikZ diagram as an image.
+
+The image URL comes from the `image` property (without protocol prefix).
+
+Properties:
+
+  - image: Image path (<https://> is prepended automatically)
+  - width: Image width in pixels (default: panel width)
+  - caption: Caption text displayed below the diagram
+
+Example:
+
+    | tikz
+    | image:imagedelivery.net/example/public
+    | width:400
+    | caption:A triangle
+    ---
+    \begin{tikzpicture}
+    \draw (0,0) -- (1,1) -- (2,0) -- cycle;
+    \end{tikzpicture}
+
+-}
+renderTikz : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderTikz params _ _ block _ =
+    let
+        url =
+            Dict.get "image" block.properties
+                |> Maybe.map (\path -> "https://" ++ path)
+                |> Maybe.withDefault ""
+
+        width =
+            case Dict.get "width" block.properties of
+                Nothing ->
+                    String.fromInt params.width ++ "px"
+
+                Just w ->
+                    case String.toInt w of
+                        Just _ ->
+                            w ++ "px"
+
+                        Nothing ->
+                            String.fromInt params.width ++ "px"
+
+        caption =
+            Dict.get "caption" block.properties
+
+        captionElement =
+            case caption of
+                Just cap ->
+                    [ Html.div
+                        [ HA.style "font-size" "0.9em"
+                        , HA.style "font-style" "italic"
+                        , HA.style "margin-top" "0.5em"
+                        , HA.style "color" "#555"
+                        ]
+                        [ Html.text cap ]
+                    ]
+
+                Nothing ->
+                    []
+
+        isExpandable =
+            List.member "expandable" block.args
+
+        imageElement =
+            Html.img
+                [ HA.src url
+                , HA.style "max-width" width
+                , HA.style "pointer-events" "none"
+                ]
+                []
+
+        imageDisplay =
+            if isExpandable then
+                Html.span
+                    [ HA.style "cursor" "zoom-in"
+                    , HA.style "display" "inline-block"
+                    , Html.Events.stopPropagationOn "click"
+                        (Json.Decode.succeed ( ExpandImage url, True ))
+                    ]
+                    [ imageElement ]
+
+            else
+                imageElement
+    in
+    if url == "" then
+        [ Html.div
+            (blockIdAndStyle block
+                ++ [ HA.style "margin" "1em 0"
+                   , HA.style "cursor" "pointer"
+                   ]
+                ++ Render.Utility.rlBlockSync block.meta
+            )
+            [ Html.span [ HA.style "pointer-events" "none" ] [ Html.text "[TikZ: no image URL]" ] ]
+        ]
+
+    else
+        [ Html.div
+            (blockIdAndStyle block
+                ++ [ HA.style "text-align" "center"
+                   , HA.style "margin" "1em 0"
+                   , HA.style "cursor" "pointer"
+                   ]
+                ++ Render.Utility.rlBlockSync block.meta
+            )
+            (imageDisplay
+                :: captionElement
+            )
+        ]
+
+
+
+-- MEDIA
+
+
+{-| Render an image block.
+
+    | image [arguments] [properties]
+    <url>
+
+Arguments:
+
+  - expandable: Click thumbnail to open full-size overlay; click overlay to close
+
+Properties:
+
+  - width: Image width. Values: pixel number, "fill" (100%), or "to-edges" (120% of panel)
+  - float: Float image with text wrap. Values: "left" or "right"
+  - ypadding: Vertical padding in pixels (default 18, ignored when floated)
+  - description: Alt text for accessibility
+  - figure: Figure number (displays "Figure N")
+  - caption: Caption text (italic, below image)
+
+Examples:
+
+    | image
+    https://example.com/photo.jpg
+
+    | image expandable width:400 caption:A lovely sunset
+    https://example.com/sunset.jpg
+
+    | image float:left width:200
+    https://example.com/portrait.jpg
+
+-}
+renderImage : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderImage params _ _ block _ =
+    let
+        -- For verbatim blocks, the URL is in body (Left String), not firstLine
+        src =
+            case block.body of
+                Left content ->
+                    String.trim content
+
+                Right _ ->
+                    block.firstLine
+
+        -- Width: supports "fill", "to-edges", or pixel value
+        widthStyle =
+            case Dict.get "width" block.properties of
+                Nothing ->
+                    [ HA.style "max-width" (String.fromInt params.width ++ "px") ]
+
+                Just "fill" ->
+                    [ HA.style "width" "100%" ]
+
+                Just "to-edges" ->
+                    [ HA.style "max-width" (String.fromInt (round (1.2 * toFloat params.width)) ++ "px") ]
+
+                Just w ->
+                    case String.toInt w of
+                        Just pixels ->
+                            [ HA.style "max-width" (String.fromInt pixels ++ "px") ]
+
+                        Nothing ->
+                            [ HA.style "max-width" (String.fromInt params.width ++ "px") ]
+
+        -- Vertical padding (used for non-floated images)
+        ypadding =
+            Dict.get "ypadding" block.properties
+                |> Maybe.andThen String.toInt
+                |> Maybe.withDefault 18
+
+        -- Float: left or right (small top margin to align with text baseline)
+        floatStyle =
+            case Dict.get "float" block.properties of
+                Just "left" ->
+                    [ HA.style "float" "left"
+                    , HA.style "margin-right" "1em"
+                    , HA.style "margin-top" "4px"
+                    , HA.style "margin-bottom" "0.5em"
+                    ]
+
+                Just "right" ->
+                    [ HA.style "float" "right"
+                    , HA.style "margin-left" "1em"
+                    , HA.style "margin-top" "4px"
+                    , HA.style "margin-bottom" "0.5em"
+                    ]
+
+                _ ->
+                    [ HA.style "text-align" "center"
+                    , HA.style "padding-top" (String.fromInt ypadding ++ "px")
+                    , HA.style "padding-bottom" (String.fromInt ypadding ++ "px")
+                    ]
+
+        -- Description (alt text)
+        description =
+            Dict.get "description" block.properties
+                |> Maybe.withDefault ""
+
+        -- Figure label and caption
+        figureLabel =
+            case ( Dict.get "figure" block.properties, Dict.get "caption" block.properties ) of
+                ( Nothing, Nothing ) ->
+                    Html.text ""
+
+                ( Nothing, Just cap ) ->
+                    Html.div
+                        [ HA.style "font-size" "0.9em"
+                        , HA.style "font-style" "italic"
+                        , HA.style "margin-top" "0.5em"
+                        , HA.style "color" "#555"
+                        ]
+                        [ Html.text cap ]
+
+                ( Just fig, Nothing ) ->
+                    Html.div
+                        [ HA.style "font-size" "0.9em"
+                        , HA.style "margin-top" "0.5em"
+                        , HA.style "color" "#555"
+                        ]
+                        [ Html.text ("Figure " ++ fig) ]
+
+                ( Just fig, Just cap ) ->
+                    Html.div
+                        [ HA.style "font-size" "0.9em"
+                        , HA.style "margin-top" "0.5em"
+                        , HA.style "color" "#555"
+                        ]
+                        [ Html.span [ HA.style "font-weight" "bold" ] [ Html.text ("Figure " ++ fig ++ ". ") ]
+                        , Html.span [ HA.style "font-style" "italic" ] [ Html.text cap ]
+                        ]
+
+        -- The image element
+        imageElement =
+            Html.img
+                ([ HA.src src
+                 , HA.alt description
+                 ]
+                    ++ widthStyle
+                )
+                []
+
+        -- Check if expandable (as an argument)
+        isExpandable =
+            List.member "expandable" block.args
+
+        -- Expandable: click to show overlay via Elm message
+        expandableImage =
+            Html.span
+                [ HA.style "cursor" "zoom-in"
+                , HA.style "display" "inline-block"
+                , Html.Events.stopPropagationOn "click"
+                    (Json.Decode.succeed ( ExpandImage src, True ))
+                ]
+                [ imageElement ]
+
+        -- Choose which image display to use
+        imageDisplay =
+            if isExpandable then
+                expandableImage
+
+            else
+                imageElement
+    in
+    [ Html.div
+        (blockIdAndStyle block
+            ++ floatStyle
+            ++ Render.Utility.rlBlockSync block.meta
+        )
+        [ imageDisplay
+        , figureLabel
+        ]
+    ]
+
+
+{-| Render an embedded iframe.
+
+    | iframe
+    https://www.youtube.com/embed/dQw4w9WgXcQ
+
+Properties:
+
+  - width: Width in pixels (default: panel width)
+  - height: Height in pixels (default: 400)
+
+-}
+renderIframe : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderIframe params _ _ block _ =
+    let
+        src =
+            block.firstLine
+
+        width =
+            Dict.get "width" block.properties
+                |> Maybe.andThen String.toInt
+                |> Maybe.withDefault params.width
+
+        height =
+            Dict.get "height" block.properties
+                |> Maybe.andThen String.toInt
+                |> Maybe.withDefault 400
+    in
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "text-align" "center"
+               , HA.style "margin" "1em 0"
+               ]
+        )
+        [ Html.iframe
+            [ HA.src src
+            , HA.style "width" (String.fromInt width ++ "px")
+            , HA.style "height" (String.fromInt height ++ "px")
+            , HA.style "border" "none"
+            ]
+            []
+        ]
+    ]
+
+
+
+-- INCLUDES
+
+
+{-| Load external content (processed at higher level, hidden in output).
+
+    | load
+    /path/to/file.md
+
+-}
+renderLoad : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderLoad _ _ _ block _ =
+    [ Html.div [ idAttr block.meta.id, HA.style "display" "none" ] [] ]
+
+
+
+-- CHEMISTRY
+
+
+{-| Render chemical equations using mhchem notation.
+
+    | chem
+    2H2 + O2 -> 2H2O
+
+-}
+renderChem : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderChem params acc _ block children =
+    let
+        content =
+            getVerbatimContent block
+                |> (\s -> "\\ce{" ++ s ++ "}")
+                |> applyMathMacros acc.mathMacroDict
+    in
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "text-align" "center"
+               , HA.style "margin" "1em 0"
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync block.meta
+        )
+        [ Html.div [ HA.style "pointer-events" "none" ]
+            [ mathText params.editCount { id = block.meta.id, begin = block.meta.contentBegin, end = block.meta.contentEnd } DisplayMathMode content ]
+        ]
+    ]
+
+
+
+-- ARRAYS
+
+
+{-| Render a LaTeX-style math array.
+
+    | array ccc
+    a & b & c \\
+    d & e & f
+
+Arguments:
+
+  - Column format (e.g., "ccc" for 3 centered columns, "lcr" for left/center/right)
+
+-}
+renderArray : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderArray params acc _ block _ =
+    let
+        format =
+            List.head block.args |> Maybe.withDefault "c"
+
+        content =
+            getVerbatimContent block
+                |> applyMathMacros acc.mathMacroDict
+
+        -- Wrap in array environment
+        arrayContent =
+            "\\begin{array}{" ++ format ++ "}\n" ++ content ++ "\n\\end{array}"
+    in
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "text-align" "center"
+               , HA.style "margin" "1em 0"
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync block.meta
+        )
+        [ Html.div [ HA.style "pointer-events" "none" ]
+            [ mathText params.editCount { id = block.meta.id, begin = block.meta.contentBegin, end = block.meta.contentEnd } DisplayMathMode arrayContent ]
+        ]
+    ]
+
+
+{-| Render a text table with & as column separator.
+
+    | textarray
+    Name & Age & City
+    Alice & 30 & NYC
+    Bob & 25 & LA
+
+Also available as `| table`.
+
+-}
+renderTextArray : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderTextArray params _ _ block _ =
+    let
+        content =
+            getVerbatimContent block
+
+        rows =
+            content
+                |> String.lines
+                |> List.filter (\line -> String.trim line /= "")
+                |> List.map parseTableRow
+    in
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "margin" "1em 0"
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync block.meta
+        )
+        [ Html.table
+            [ HA.style "border-collapse" "collapse"
+            , HA.style "margin" "0 auto"
+            , HA.style "pointer-events" "none"
+            ]
+            [ Html.tbody [] (List.map renderTextArrayRow rows) ]
+        ]
+    ]
+
+
+parseTableRow : String -> List String
+parseTableRow line =
+    String.split "&" line
+        |> List.map String.trim
+
+
+renderTextArrayRow : List String -> Html Msg
+renderTextArrayRow cells =
+    Html.tr []
+        (List.map
+            (\cell ->
+                Html.td
+                    [ HA.style "padding" "4px 12px"
+                    , HA.style "border" "1px solid #ddd"
+                    ]
+                    [ Html.text cell ]
+            )
+            cells
+        )
+
+
+{-| Render a CSV table with comma-separated values.
+
+    | csvtable title:Sales Data
+    Product,Q1,Q2,Q3
+    Widgets,100,150,200
+    Gadgets,50,75,100
+
+Properties:
+
+  - title: Optional table title
+
+-}
+renderCsvTable : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderCsvTable params _ _ block _ =
+    let
+        content =
+            getVerbatimContent block
+
+        title =
+            Dict.get "title" block.properties
+
+        rows =
+            content
+                |> String.lines
+                |> List.filter (\line -> String.trim line /= "")
+                |> List.map parseCsvRow
+
+        headerRow =
+            List.head rows |> Maybe.withDefault []
+
+        dataRows =
+            List.drop 1 rows
+    in
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "margin" "1em 0"
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync block.meta
+        )
+        [ Html.div [ HA.style "pointer-events" "none" ]
+            (case title of
+                Just t ->
+                    [ Html.div [ HA.style "font-weight" "bold", HA.style "margin-bottom" "0.5em" ] [ Html.text t ]
+                    , renderCsvTableHtml headerRow dataRows
+                    ]
+
+                Nothing ->
+                    [ renderCsvTableHtml headerRow dataRows ]
+            )
+        ]
+    ]
+
+
+parseCsvRow : String -> List String
+parseCsvRow line =
+    String.split "," line
+        |> List.map String.trim
+
+
+renderCsvTableHtml : List String -> List (List String) -> Html Msg
+renderCsvTableHtml headers rows =
+    Html.table
+        [ HA.style "border-collapse" "collapse" ]
+        [ Html.thead []
+            [ Html.tr []
+                (List.map
+                    (\h ->
+                        Html.th
+                            [ HA.style "padding" "4px 12px"
+                            , HA.style "border-bottom" "2px solid #333"
+                            , HA.style "text-align" "left"
+                            ]
+                            [ Html.text h ]
+                    )
+                    headers
+                )
+            ]
+        , Html.tbody []
+            (List.map
+                (\row ->
+                    Html.tr []
+                        (List.map
+                            (\cell ->
+                                Html.td
+                                    [ HA.style "padding" "4px 12px"
+                                    , HA.style "border-bottom" "1px solid #ddd"
+                                    ]
+                                    [ Html.text cell ]
+                            )
+                            row
+                        )
+                )
+                rows
+            )
+        ]
+
+
+
+-- RAW VERBATIM
+
+
+{-| Render raw verbatim text in a preformatted block.
+
+    | verbatim
+    This text is displayed exactly as written,
+    with all spacing and formatting preserved.
+
+-}
+renderVerbatim : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderVerbatim params _ _ block _ =
+    let
+        content =
+            getVerbatimContent block
+    in
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "margin" "1em 0"
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync block.meta
+        )
+        [ Html.pre
+            [ HA.style "font-family" "monospace"
+            , HA.style "font-size" (Render.Sizing.codeSize params.sizing)
+            , HA.style "background-color" "#f5f5f5"
+            , HA.style "padding" "1em"
+            , HA.style "padding-left" "2em"
+            , HA.style "white-space" "pre-wrap"
+            , HA.style "pointer-events" "none"
+            ]
+            [ Html.text content ]
+        ]
+    ]
+
+
+{-| Render a book block.
+
+    | book
+    title: Nature
+    author: Phineas Peabody
+    publication-date: 2026
+
+Renders as:
+
+    Nature
+
+    by Phineas Peabody
+
+-}
+renderBook : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderBook params _ _ block _ =
+    let
+        title =
+            Dict.get "title" block.properties |> Maybe.withDefault "Untitled"
+
+        author =
+            Dict.get "author" block.properties |> Maybe.withDefault ""
+
+        authorLine =
+            if author /= "" then
+                [ Html.div
+                    [ HA.style "margin-top" "0.5em"
+                    , HA.style "font-size" "1.2em"
+                    ]
+                    [ Html.text ("by " ++ author) ]
+                ]
+
+            else
+                []
+    in
+    [ Html.div
+        (blockIdAndStyle block
+            ++ [ HA.style "text-align" "center"
+               , HA.style "margin" "2em 0"
+               , HA.style "cursor" "pointer"
+               ]
+            ++ Render.Utility.rlBlockSync block.meta
+        )
+        [ Html.div [ HA.style "pointer-events" "none" ]
+            (Html.div
+                [ HA.style "font-size" "2.5em"
+                , HA.style "margin-bottom" "0.5em"
+                ]
+                [ Html.text title ]
+                :: authorLine
+            )
+        ]
+    ]
+
+
+{-| Render an article block.
+
+    | article
+    title: On the Nature of Things
+    author: Jane Smith
+
+Renders the same as a book block.
+
+-}
+renderArticle : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderArticle params acc name block children =
+    renderBook params acc name block children
+
+
+
+-- NO-OP BLOCKS
+
+
+{-| Render nothing (for hidden/configuration blocks).
+
+Used for: settings, load-data, hide, texComment, docinfo, load-files, include, setup
+
+-}
+renderNothing : CompilerParameters -> Accumulator -> String -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderNothing _ _ _ block _ =
+    [ Html.div [ idAttr block.meta.id, HA.style "display" "none" ] [] ]

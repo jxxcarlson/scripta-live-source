@@ -3,7 +3,7 @@ module Render.Export.Image exposing (export, exportBlock)
 import Dict
 import Either exposing (Either(..))
 import Generic.ASTTools
-import Generic.Language exposing (Expression, ExpressionBlock)
+import V3.Types exposing (Expression, ExpressionBlock)
 import List.Extra
 import Render.Export.Util
 import Render.Settings exposing (RenderSettings)
@@ -168,7 +168,7 @@ imageParameters settings body =
             Dict.get "caption" dict |> Maybe.withDefault ""
 
         displayWidth =
-            settings.width
+            settings.windowWidth
 
         width : String
         width =
@@ -239,7 +239,7 @@ imageParametersForBlock settings block =
             Dict.get "caption" block.properties |> Maybe.withDefault "" |> String.replace ":" ""
 
         displayWidth =
-            settings.width
+            settings.windowWidth
 
         width : String
         width =

@@ -5,7 +5,6 @@ import Common.Model as Common
 import Config
 import Constants exposing (constants)
 import Document exposing (Document)
-import Editor
 import Element exposing (..)
 import Element.Background as Background
 import Element.Border as Border
@@ -20,11 +19,7 @@ import Json.Encode
 import Keyboard
 import List.Extra
 import Random
-import ScriptaV2.API
-import ScriptaV2.Compiler
-import ScriptaV2.DifferentialCompiler
-import ScriptaV2.Language
-import ScriptaV2.Msg exposing (MarkupMsg)
+import Scripta
 import Style
 import Sync
 import Task
@@ -37,7 +32,7 @@ import Widget
 -- VIEW
 
 
-view : (Common.CommonMsg -> msg) -> (MarkupMsg -> msg) -> Common.CommonModel -> Html msg
+view : (Common.CommonMsg -> msg) -> (Scripta.Event -> msg) -> Common.CommonModel -> Html msg
 view toMsg renderMsg model =
     layoutWith { options = [ Element.focusStyle noFocus ] }
         [ Style.background_ model.theme
@@ -93,7 +88,7 @@ headerHeight =
     90
 
 
-mainColumn : (Common.CommonMsg -> msg) -> (MarkupMsg -> msg) -> Common.CommonModel -> Element msg
+mainColumn : (Common.CommonMsg -> msg) -> (Scripta.Event -> msg) -> Common.CommonModel -> Element msg
 mainColumn toMsg renderMsg model =
     column (Style.background_ model.theme :: mainColumnStyle)
         [ column
@@ -248,7 +243,7 @@ sidebar toMsg model =
         ]
 
 
-tocPanel : (MarkupMsg -> msg) -> Common.CommonModel -> Element msg
+tocPanel : (Scripta.Event -> msg) -> Common.CommonModel -> Element msg
 tocPanel renderMsg model =
     -- Hide TOC when window width is below 1000px to give more space to content
     if model.windowWidth < 1000 then
@@ -257,9 +252,8 @@ tocPanel renderMsg model =
     else
         let
             tocItems =
-                model.compilerOutput
-                    |> ScriptaV2.Compiler.viewTOC
-                    |> List.map (Element.map renderMsg)
+                model.compilerOutput.toc
+                    |> List.map (Html.map renderMsg >> Element.html)
         in
         Element.column
             [ Element.width (px tocWidth)
@@ -508,7 +502,7 @@ noFocus =
     }
 
 
-displayRenderedText : (MarkupMsg -> msg) -> Common.CommonModel -> Element msg
+displayRenderedText : (Scripta.Event -> msg) -> Common.CommonModel -> Element msg
 displayRenderedText renderMsg model =
     Element.el
         [ alignTop
@@ -532,7 +526,7 @@ displayRenderedText renderMsg model =
             , Style.forceColorStyle model.theme
             ]
             [ ( String.fromInt model.count
-              , container model (model.compilerOutput.body |> List.map (Element.map renderMsg))
+              , container model [ Element.html (Html.map renderMsg (Html.div [] model.compilerOutput.body)) ]
               )
             ]
         )
@@ -585,9 +579,7 @@ mainColumnStyle =
 editorView : (Common.CommonMsg -> msg) -> Common.CommonModel -> Element msg
 editorView toMsg model =
     Element.Keyed.el
-        [ -- RECEIVE INFORMATION FROM CODEMIRROR
-          Element.htmlAttribute (onSelectionChange toMsg) -- receive info from codemirror
-        , Element.alignTop
+        [ Element.alignTop
         , Element.htmlAttribute (onTextChange toMsg) -- receive info from codemirror
         , Style.htmlId "editor-here"
         , Element.height (Element.px <| editorHeight model)
@@ -607,14 +599,6 @@ editorView toMsg model =
                   else
                     Html.Attributes.attribute "noOp" "true"
                 , Html.Attributes.attribute "text" model.initialText
-                , Html.Attributes.attribute "editordata" (encodeEditorData model.editorData)
-                , case model.maybeSelectionOffset of
-                    Nothing ->
-                        Html.Attributes.attribute "noOp" "true"
-
-                    Just refinedSelection ->
-                        Html.Attributes.attribute "refineselection" (encodeRefinedSelection refinedSelection model.editorData)
-                , Html.Attributes.attribute "selection" (stringOfBool model.doSync)
                 ]
                 []
             )
@@ -628,14 +612,6 @@ editorHeight model =
 
 
 -- Editor event handlers
-
-
-onSelectionChange : (Common.CommonMsg -> msg) -> Html.Attribute msg
-onSelectionChange toMsg =
-    Html.Events.on "selected-text"
-        (Json.Decode.field "detail" Json.Decode.string
-            |> Json.Decode.map (toMsg << Common.SelectedText)
-        )
 
 
 onTextChange : (Common.CommonMsg -> msg) -> Html.Attribute msg
@@ -652,27 +628,6 @@ onTextChange toMsg =
 
 
 -- Editor utility functions
-
-
-encodeEditorData : { begin : Int, end : Int } -> String
-encodeEditorData { begin, end } =
-    Json.Encode.object
-        [ ( "begin", Json.Encode.int begin )
-        , ( "end", Json.Encode.int end )
-        ]
-        |> Json.Encode.encode 2
-
-
-encodeRefinedSelection : { focusOffset : Int, anchorOffset : Int, text : String } -> { begin : Int, end : Int } -> String
-encodeRefinedSelection { focusOffset, anchorOffset, text } { begin, end } =
-    Json.Encode.object
-        [ ( "focusOffset", Json.Encode.int focusOffset )
-        , ( "anchorOffset", Json.Encode.int anchorOffset )
-        , ( "text", Json.Encode.string text )
-        , ( "begin", Json.Encode.int begin )
-        , ( "end", Json.Encode.int end )
-        ]
-        |> Json.Encode.encode 2
 
 
 stringOfBool : Bool -> String

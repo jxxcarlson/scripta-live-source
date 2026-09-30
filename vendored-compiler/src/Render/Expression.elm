@@ -1,1201 +1,1618 @@
-module Render.Expression exposing (hd, nonstandardElements, render)
+module Render.Expression exposing (renderList)
+
+{-| Render expressions to HTML.
+-}
 
 import Dict exposing (Dict)
-import ETeX.MathMacros
 import ETeX.Transform
-import Element exposing (Element, column, el, newTabLink, spacing)
-import Element.Background as Background
-import Element.Border
-import Element.Events as Events
-import Element.Font as Font
-import Element.Input as Input
-import Generic.ASTTools as ASTTools
-import Generic.Acc exposing (Accumulator)
-import Generic.Language exposing (Expr(..), Expression)
-import Html
-import Html.Attributes
-import List.Extra
-import Maybe.Extra
-import MicroScheme.Interpreter
-import Render.Constants as Constants
-import Render.Graphics
-import Render.Html.Math
-import Render.Math
-import Render.Settings exposing (RenderSettings)
-import Render.Sync
-import Render.Theme
-import Render.ThemeHelpers
-import Render.Utility as Utility
-import ScriptaV2.Msg exposing (MarkupMsg(..))
-import String.Extra
+import Html exposing (Html)
+import Html.Attributes as HA
+import Html.Events as HE
+import Json.Decode as Decode
+import Render.Constants
+import Render.Math exposing (DisplayMode(..), mathText)
+import Render.Utility
+import V3.Types exposing (Accumulator, CompilerParameters, Expr(..), ExprMeta, Expression, MathMacroDict, Msg(..))
 
 
-render : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> Expression -> Element MarkupMsg
-render generation acc settings attrs expr =
-    let
-        background =
-            Background.color <| Render.Settings.getThemedElementColor .offsetBackground settings.theme
-    in
+{-| Render a list of expressions.
+-}
+renderList : CompilerParameters -> Accumulator -> List Expression -> List (Html Msg)
+renderList params acc expressions =
+    List.map (render params acc) expressions
+
+
+{-| Render a single expression.
+-}
+render : CompilerParameters -> Accumulator -> Expression -> Html Msg
+render params acc expr =
     case expr of
-        Text string meta ->
-            Element.el (background :: [ Events.onClick (SendMeta meta), htmlId meta.id ] ++ attrs) (Element.text (string ++ " "))
+        Text str meta ->
+            renderText params str meta
 
-        Fun name exprList meta ->
-            if List.member name [ "chem", "math", "m", "code" ] then
-                renderVerbatim name generation acc settings meta (ASTTools.exprListToStringList exprList |> String.join " ")
+        Fun name args meta ->
+            renderFun params acc name args meta
 
-            else if name == "anchor" then
-                let
-                    -- Check if the anchor's own ID matches selectedId
-                    anchorIdMatches =
-                        settings.selectedId == meta.id
+        VFun name content meta ->
+            renderVFun params acc name content meta
 
-                    -- Get all IDs from the content
-                    contentIds =
-                        List.map (Generic.Language.getMeta >> .id) exprList
-
-                    -- Check if any content ID matches selectedId
-                    contentIdMatches =
-                        List.member settings.selectedId contentIds
-
-                    -- Highlight if either the anchor ID or any content ID matches
-                    shouldHighlight =
-                        anchorIdMatches || contentIdMatches
-
-                    highlightAttrs =
-                        if shouldHighlight then
-                            -- Use inline style for highlighting with a light blue color
-                            [ Element.htmlAttribute (Html.Attributes.style "background-color" "#ADD8E6") -- Light blue
-                            , Element.htmlAttribute (Html.Attributes.style "padding" "4px")
-                            , Element.htmlAttribute (Html.Attributes.class "anchor-highlight")
-                            ]
-
-                        else
-                            []
-                in
-                Element.el ([ Events.onClick (SendMeta meta), htmlId meta.id ] ++ highlightAttrs)
-                    (renderMarked name generation acc settings attrs exprList)
-
-            else if name == "mark" then
-                let
-                    -- Check if the anchor's own ID matches selectedId
-                    anchorIdMatches =
-                        settings.selectedId == meta.id
-
-                    highlightAttrs =
-                        if anchorIdMatches then
-                            -- Use inline style for highlighting with a light blue color
-                            [ Element.htmlAttribute (Html.Attributes.style "background-color" "#ADD8E6") -- Light blue
-                            , Element.htmlAttribute (Html.Attributes.style "padding" "4px")
-                            , Element.htmlAttribute (Html.Attributes.class "anchor-highlight")
-                            ]
-
-                        else
-                            []
-                in
-                Element.el ([ Events.onClick (SendMeta meta), htmlId meta.id ] ++ highlightAttrs)
-                    (renderMarked name generation acc settings attrs exprList)
-
-            else
-                Element.el (background :: [ Events.onClick (SendMeta meta), htmlId meta.id ])
-                    (renderMarked name generation acc settings attrs exprList)
-
-        VFun name str meta ->
-            -- TODO: Events.onClick (SendMeta meta)?
-            renderVerbatim name generation acc settings meta str
-
-        ExprList indentation exprList meta ->
-            Element.column []
-                [ Element.paragraph (background :: [ Element.paddingEach { left = 2, right = 0, top = 0, bottom = 0 } ]) (List.map (render generation acc settings attrs) exprList)
-                ]
+        ExprList _ exprs meta ->
+            Html.span (Render.Utility.rlSync meta)
+                (renderList params acc exprs)
 
 
-renderVerbatim : String -> Int -> { a | mathMacroDict : ETeX.MathMacros.MathMacroDict } -> RenderSettings -> { b | id : String } -> String -> Element msg
-renderVerbatim name generation acc settings meta str =
-    case Dict.get name verbatimDict of
-        Nothing ->
-            errorText 1 name
+{-| Render plain text with position data attributes for selection sync.
+-}
+renderText : CompilerParameters -> String -> ExprMeta -> Html Msg
+renderText params str meta =
+    Html.span
+        (Render.Utility.rlSync meta)
+        [ Html.text str ]
 
-        Just f ->
-            f generation acc settings meta str
 
-
-renderMarked : String -> Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-renderMarked name generation acc settings attrs exprList =
+{-| Render a function application.
+-}
+renderFun : CompilerParameters -> Accumulator -> String -> List Expression -> ExprMeta -> Html Msg
+renderFun params acc name args meta =
     case Dict.get name markupDict of
+        Just renderer ->
+            renderer params acc args meta
+
         Nothing ->
-            Element.paragraph [ spacing 8 ]
-                (Element.el [ Background.color errorBackgroundColor, Element.paddingXY 4 2 ]
-                    (Element.text name)
-                    :: List.map (render generation acc settings attrs) exprList
-                )
-
-        Just f ->
-            f generation acc settings attrs exprList
+            -- Default rendering for unknown functions
+            renderDefaultFun params acc name args meta
 
 
-errorBackgroundColor =
-    Element.rgb 1 0.8 0.8
+{-| Render a verbatim function.
+-}
+renderVFun : CompilerParameters -> Accumulator -> String -> String -> ExprMeta -> Html Msg
+renderVFun params acc name content meta =
+    case name of
+        "$" ->
+            -- Inline math (legacy) - apply ETeX transform with user macros
+            mathText params.editCount { id = meta.id, begin = meta.begin, end = meta.end } InlineMathMode (applyMathMacros acc.mathMacroDict content)
+
+        "math" ->
+            -- Inline math - apply ETeX transform with user macros
+            mathText params.editCount { id = meta.id, begin = meta.begin, end = meta.end } InlineMathMode (applyMathMacros acc.mathMacroDict content)
+
+        "m" ->
+            -- Inline math (short alias) - apply ETeX transform with user macros
+            mathText params.editCount { id = meta.id, begin = meta.begin, end = meta.end } InlineMathMode (applyMathMacros acc.mathMacroDict content)
+
+        "chem" ->
+            -- Chemistry formula - render as math with mhchem
+            mathText params.editCount { id = meta.id, begin = meta.begin, end = meta.end } InlineMathMode ("\\ce{" ++ content ++ "}")
+
+        "code" ->
+            Html.code (Render.Utility.rlSync meta ++ [ HA.style "font-size" "1.01rem" ]) [ Html.text content ]
+
+        "`" ->
+            -- Backtick code (alias for code)
+            Html.code (Render.Utility.rlSync meta ++ [ HA.style "font-size" "1.01rem" ]) [ Html.text content ]
+
+        _ ->
+            -- Default: just show the content
+            Html.span (Render.Utility.rlSync meta) [ Html.text content ]
 
 
+{-| Transform ETeX notation to LaTeX using ETeX.Transform.evalStr.
 
--- DICTIONARIES
+Converts notation like `int_0^2`, `frac(1,n+1)` to `\int_0^2`, `\frac{1}{n+1}`.
+Also expands user-defined macros from mathmacros blocks.
+
+-}
+applyMathMacros : MathMacroDict -> String -> String
+applyMathMacros macroDict content =
+    ETeX.Transform.evalStr macroDict content
 
 
-markupDict :
-    Dict
-        String
-        (Int
-         -> Accumulator
-         -> RenderSettings
-         -> List (Element.Attribute MarkupMsg)
-         -> List Expression
-         -> Element MarkupMsg
+{-| Default rendering for unknown function names.
+-}
+renderDefaultFun : CompilerParameters -> Accumulator -> String -> List Expression -> ExprMeta -> Html Msg
+renderDefaultFun params acc name args meta =
+    Html.span (Render.Utility.rlSync meta)
+        (Html.span [ HA.style "color" "blue" ] [ Html.text ("[" ++ name ++ " ") ]
+            :: renderList params acc args
+            ++ [ Html.text "]" ]
         )
+
+
+
+-- MARKUP DICTIONARY
+
+
+{-| Dictionary of markup function renderers.
+-}
+markupDict : Dict String (CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg)
 markupDict =
     Dict.fromList
-        [ ( "bibitem", \_ _ _ attr exprList -> bibitem exprList )
+        [ ( "strong", renderStrong )
+        , ( "bold", renderStrong )
+        , ( "b", renderStrong )
+        , ( "italic", renderItalic )
+        , ( "i", renderItalic )
+        , ( "emph", renderItalic )
+        , ( "strike", renderStrike )
+        , ( "underline", renderUnderline )
+        , ( "red", renderColor "red" )
+        , ( "blue", renderColor "blue" )
+        , ( "green", renderColor "#006400" )
+        , ( "pink", renderColor "#ff6464" )
+        , ( "magenta", renderColor "#ff33c0" )
+        , ( "violet", renderColor "#9664ff" )
+        , ( "gray", renderColor "#808080" )
+        , ( "comment", renderColor "blue" )
+        , ( "highlight", renderHighlight )
+        , ( "errorHighlight", renderErrorHighlight )
+        , ( "link", renderLink )
+        , ( "href", renderHref )
+        , ( "image", renderImage )
+        , ( "ilink", renderIlink )
+        , ( "wikilink", renderWikilink )
+        , ( "index", renderIndex_ )
+        , ( "ref", renderRef )
+        , ( "eqref", renderMathRef )
+        , ( "mathref", renderMathRef )
+        , ( "cite", renderCite )
+        , ( "sup", renderSup )
+        , ( "sub", renderSub )
 
-        -- STYLE
-        , ( "scheme", \g acc s attr exprList -> renderScheme g acc s attr exprList )
-        , ( "compute", \g acc s attr exprList -> renderComputation g acc s attr exprList )
-        , ( "data", \g acc s attr exprList -> renderDataTools g acc s attr exprList )
-        , ( "button", \g acc s attr exprList -> renderButton g acc s attr exprList )
-        , ( "strong", \g acc s attr exprList -> strong g acc s attr exprList )
-        , ( "bold", \g acc s attr exprList -> strong g acc s attr exprList )
-        , ( "textbf", \g acc s attr exprList -> strong g acc s attr exprList )
-        , ( "b", \g acc s attr exprList -> strong g acc s attr exprList )
-        , ( "subheading", \g acc s attr exprList -> subheading g acc s attr exprList )
-        , ( "sh", \g acc s attr exprList -> subheading g acc s attr exprList )
-        , ( "smallsubheading", \g acc s attr exprList -> smallsubheading g acc s attr exprList )
-        , ( "ssh", \g acc s attr exprList -> smallsubheading g acc s attr exprList )
-        , ( "var", \g acc s attr exprList -> var g acc s attr exprList )
-        , ( "marked", \g acc s attr exprList -> marked g acc s attr exprList )
-        , ( "italic", \g acc s attr exprList -> italic g acc s attr exprList )
-        , ( "qed", \g acc s attr exprList -> qed g acc s attr exprList )
-        , ( "textit", \g acc s attr exprList -> italic g acc s attr exprList )
-        , ( "bi", \g acc s attr exprList -> boldItalic g acc s attr exprList )
-        , ( "i", \g acc s attr exprList -> italic g acc s attr exprList )
-        , ( "boldItalic", \g acc s attr exprList -> boldItalic g acc s attr exprList )
-        , ( "strike", \g acc s attr exprList -> strike g acc s attr exprList )
-        , ( "underscore", \g acc s attr exprList -> underscore g acc s attr exprList )
-        , ( "ref", \_ acc settings attr exprList -> ref acc settings exprList )
-        , ( "reflink", \_ acc s attr exprList -> reflink s acc exprList )
-        , ( "eqref", \_ acc s attr exprList -> eqref acc s exprList )
-        , ( "underline", \g acc s attr exprList -> underline g acc s attr exprList )
-        , ( "u", \g acc s attr exprList -> underline g acc s attr exprList )
-        , ( "hide", \_ _ _ _ _ -> Element.none )
-        , ( "author", \_ _ _ _ _ -> Element.none )
-        , ( "date", \_ _ _ _ _ -> Element.none )
-        , ( "today", \_ _ _ _ _ -> Element.none )
-        , ( "comment", \g acc s attr exprList -> blue g acc s attr exprList )
-        , ( "lambda", \_ _ _ _ _ -> Element.none )
-        , ( "hrule"
-          , \_ _ s _ _ ->
-                Element.column
-                    [ Element.width (Element.px s.width)
-                    ]
-                    [ Element.el
-                        [ Element.Border.width 1
-                        , Element.width (Element.px s.width)
-                        , Element.centerX
-                        , Element.Border.color (Element.rgb 0.75 0.75 0.75)
-                        ]
-                        (Element.text "")
-                    ]
-          )
+        --, ( "term", renderIndex_ )
+        --, ( "term_", renderTermHidden )
+        , ( "vspace", renderVspace )
+        , ( "break", renderVspace )
 
-        -- LATEX
-        , ( "title", \g acc s attr exprList -> title g acc s attr exprList )
-        , ( "setcounter", \_ _ _ _ _ -> Element.none )
+        -- Aliases
+        , ( "textbf", renderStrong )
+        , ( "textit", renderItalic )
+        , ( "u", renderUnderline )
+        , ( "underscore", renderUnderline )
 
-        -- COLOR
-        , ( "red", \g acc s attr exprList -> red g acc s attr exprList )
-        , ( "blue", \g acc s attr exprList -> blue g acc s attr exprList )
-        , ( "green", \g acc s attr exprList -> green g acc s attr exprList )
-        , ( "pink", \g acc s attr exprList -> pink g acc s attr exprList )
-        , ( "magenta", \g acc s attr exprList -> magenta g acc s attr exprList )
-        , ( "violet", \g acc s attr exprList -> violet g acc s attr exprList )
-        , ( "highlight", \g acc s attr exprList -> highlight g acc s attr exprList )
-        , ( "gray", \g acc s attr exprList -> gray g acc s attr exprList )
-        , ( "errorHighlight", \g acc s attr exprList -> errorHighlight g acc s attr exprList )
+        -- Text styling
+        , ( "bi", renderBoldItalic )
+        , ( "boldItalic", renderBoldItalic )
+        , ( "var", renderVar )
+        , ( "title", renderTitle )
+        , ( "subheading", renderSubheading )
+        , ( "sh", renderSubheading )
+        , ( "smallsubheading", renderSmallSubheading )
+        , ( "ssh", renderSmallSubheading )
+        , ( "large", renderLarge )
+        , ( "qed", renderQed )
 
-        --
-        --, ( "skip", \_ _ _ exprList -> skip exprList )
-        , ( "link", \g acc s attr exprList -> link g acc s attr exprList )
-        , ( "href", \g acc s attr exprList -> href g acc s attr exprList )
-        , ( "ilink", \g acc s attr exprList -> ilink g acc s attr exprList )
-        , ( "ulink", \g acc s attr exprList -> ulink g acc s attr exprList )
-        , ( "newPost", \g acc s attr exprList -> newPost g acc s attr exprList )
-        , ( "cslink", \g acc s attr exprList -> cslink g acc s attr exprList )
-        , ( "abstract", \g acc s attr exprList -> abstract g acc s attr exprList )
-        , ( "large", \g acc s attr exprList -> large g acc s attr exprList )
-        , ( "mdash", \_ _ _ _ _ -> Element.el [] (Element.text "—") )
-        , ( "ndash", \_ _ _ _ _ -> Element.el [] (Element.text "–") )
-        , ( "box", \_ _ _ _ _ -> Element.el [ Font.size 20 ] (Element.text (Utility.unicodeFromHex 0x2610)) )
-        , ( "cbox", \_ _ _ _ _ -> Element.el [ Font.size 20 ] (Element.text (Utility.unicodeFromHex 0x2611)) )
-        , ( "rbox", \_ _ _ _ _ -> Element.el [ Font.size 20, Font.color (Element.rgb 0.7 0 0) ] (Element.text (Utility.unicodeFromHex 0x2610)) )
-        , ( "crbox", \_ _ _ _ _ -> Element.el [ Font.size 20, Font.color (Element.rgb 0.7 0 0) ] (Element.text (Utility.unicodeFromHex 0x2611)) )
-        , ( "fbox", \_ _ _ _ _ -> Element.el [ Font.size 24 ] (Element.text (Utility.unicodeFromHex 0x25A0)) )
-        , ( "frbox", \_ _ _ _ _ -> Element.el [ Font.size 24, Font.color (Element.rgb 0.7 0 0) ] (Element.text (Utility.unicodeFromHex 0x25A0)) )
-        , ( "label", \_ _ _ _ _ -> Element.none )
-        , ( "cite", \_ acc _ attr exprList -> cite acc attr exprList )
-        , ( "table", \g acc s attr exprList -> table g acc s attr exprList )
-        , ( "image", \_ _ s attr exprList -> Render.Graphics.image s attr exprList )
-        , ( "inlineimage", \_ _ s attr exprList -> Render.Graphics.inlineimage s attr exprList )
-        , ( "tags", \_ _ _ _ _ -> Element.none )
-        , ( "quote", quote )
-        , ( "anchor", anchor )
-        , ( "mark", mark1 )
-        , ( "vspace", vspace )
-        , ( "break", vspace )
-        , ( "//", par )
-        , ( "par", par )
-        , ( "indent", indent )
+        -- Special characters
+        , ( "mdash", renderChar "—" )
+        , ( "ndash", renderChar "–" )
+        , ( "dollarSign", renderChar "$" )
+        , ( "dollar", renderChar "$" )
+        , ( "ds", renderChar "$" )
+        , ( "backTick", renderChar "`" )
+        , ( "bt", renderChar "`" )
+        , ( "rb", renderChar "]" )
+        , ( "lb", renderChar "[" )
+        , ( "bracket", renderBracket )
 
-        -- MiniLaTeX stuff
-        , ( "term", \g acc s attr exprList -> term g acc s attr exprList )
-        , ( "term_", \_ _ _ _ _ -> Element.none )
-        , ( "footnote", \_ acc s attr exprList -> footnote acc s exprList )
-        , ( "emph", \g acc s attr exprList -> emph g acc s attr exprList )
+        -- Checkbox symbols
+        , ( "box", renderBox )
+        , ( "cbox", renderCbox )
+        , ( "rbox", renderRbox )
+        , ( "crbox", renderCrbox )
+        , ( "fbox", renderFbox )
+        , ( "frbox", renderFrbox )
+        , ( "xbox", renderXbox )
 
-        -- , ( "group", \g acc s attr  exprList -> identityFunction g acc s attr exprList )
-        --
-        , ( "dollarSign", \_ _ _ _ _ -> Element.el [] (Element.text "$") )
-        , ( "dollar", \_ _ _ _ _ -> Element.el [] (Element.text "$") )
-        , ( "brackets", \g acc s attr exprList -> brackets g acc s attr exprList )
-        , ( "rb", \_ _ _ _ _ -> rightBracket )
-        , ( "lb", \_ _ _ _ _ -> leftBracket )
-        , ( "bt", \_ _ _ _ _ -> backTick )
-        , ( "ds", \_ _ _ _ _ -> Element.el [] (Element.text "$") )
+        -- Hidden/no-op
+        , ( "hide", renderHidden )
+        , ( "author", renderHidden )
+        , ( "date", renderHidden )
+        , ( "today", renderHidden )
+        , ( "lambda", renderHidden )
+        , ( "setcounter", renderHidden )
+        , ( "label", renderHidden )
+        , ( "tags", renderHidden )
 
-        --, ( "bs", \g acc s attr  exprList -> Element.paragraph [] (Element.text "\\" :: List.map (render g acc s) exprList) )
-        -- , ( "texarg", \g acc s attr  exprList -> Element.paragraph [] ((Element.text "{" :: List.map (render g acc s) exprList) ++ [ Element.text " }" ]) )
-        , ( "backTick", \_ _ _ _ _ -> Element.el [] (Element.text "`") )
+        -- Structure
+        , ( "//", renderPar )
+        , ( "par", renderPar )
+        , ( "///", renderPar2 )
+        , ( "par2", renderPar2 )
+        , ( "indent", renderIndent )
+        , ( "quote", renderQuote )
+        , ( "abstract", renderAbstract )
+        , ( "anchor", renderAnchor )
+        , ( "footnote", renderFootnote )
+        , ( "marked", renderMarked )
+
+        -- Tables
+        , ( "table", renderTable )
+        , ( "tableRow", renderTableRow )
+        , ( "tableItem", renderTableItem )
+
+        -- Images
+        , ( "inlineimage", renderInlineImage )
+
+        -- Bibliography
+        , ( "bibitem", renderBibitem )
+
+        -- Links (specialized)
+        , ( "ulink", renderUlink )
+        , ( "reflink", renderReflink )
+        , ( "cslink", renderCslink )
+        , ( "newPost", renderHidden )
+
+        -- Special/Interactive (simplified)
+        , ( "scheme", renderScheme )
+        , ( "compute", renderCompute )
+        , ( "data", renderData )
+        , ( "button", renderButton )
+        , ( "progress", renderProgress )
+
+        -- Misc
+        , ( "hrule", renderHrule )
+        , ( "mark", renderMark )
         ]
 
 
-verbatimDict =
-    Dict.fromList
-        [ ( "$", \g a s m str -> math g a s m str )
-        , ( "`", \g a s m str -> code g a s m str )
-        , ( "code", \g a s m str -> code g a s m str )
-        , ( "math", \g a s m str -> math g a s m str )
-        , ( "m", \g a s m str -> math g a s m str )
-        , ( "chem", \g a s m str -> chem g a s m str )
-        ]
+
+-- MARKUP RENDERERS
 
 
-nonstandardElements =
-    [ "button" ]
+{-| Render bold/strong text.
 
+    [ strong bold text ]
 
+    [ b bold text ]
 
--- FUNCTIONS
-
-
-identityFunction g acc s attrs exprList =
-    Element.paragraph [] (List.map (render g acc s attrs) exprList)
-
-
-abstract g acc s attr exprList =
-    Element.paragraph [] [ Element.el [ Font.size 18 ] (Element.text "Abstract."), simpleElement [] g acc s attr exprList ]
-
-
-large : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-large g acc s attr exprList =
-    simpleElement [ Font.size 18 ] g acc s attr exprList
-
-
-subheading : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-subheading g acc s attr exprList =
-    Element.column []
-        [ Element.el [ Element.paddingEach { top = 8, bottom = 0, left = 0, right = 0 } ]
-            (Element.paragraph [ Font.size 18 ] (List.map (render g acc s attr) exprList))
-        ]
-
-
-smallsubheading : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-smallsubheading g acc s attr exprList =
-    Element.column []
-        [ Element.el [ Element.paddingEach { top = 8, bottom = 0, left = 0, right = 0 } ]
-            (Element.paragraph [ Font.size 16, Font.italic ] (List.map (render g acc s attr) exprList))
-        ]
-
-
-link : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-link _ _ settings attr exprList =
-    case List.head <| ASTTools.exprListToStringList exprList of
-        Nothing ->
-            errorText_ "Please provide label and url"
-
-        Just argString ->
-            let
-                args =
-                    String.words argString
-
-                n =
-                    List.length args
-            in
-            if n == 0 then
-                errorText_ "Please provide url"
-
-            else if n == 1 then
-                let
-                    url =
-                        argString
-
-                    label =
-                        argString |> String.replace "https://" "" |> String.replace "http://" ""
-                in
-                newTabLink []
-                    { url = url
-                    , label = el [ Background.color settings.backgroundColor, Font.color settings.linkColor, Font.underline ] (Element.text label)
-                    }
-
-            else
-                let
-                    label =
-                        List.take (n - 1) args |> String.join " "
-
-                    url =
-                        List.drop (n - 1) args |> String.join " "
-                in
-                newTabLink []
-                    { url = url
-                    , label = el [ Background.color settings.backgroundColor, Font.color settings.linkColor, Font.underline ] (Element.text label)
-                    }
-
-
-href : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-href _ _ _ attr exprList =
-    let
-        url =
-            List.Extra.getAt 0 exprList |> Maybe.andThen ASTTools.getText |> Maybe.withDefault ""
-
-        label =
-            List.Extra.getAt 1 exprList |> Maybe.andThen ASTTools.getText |> Maybe.withDefault ""
-    in
-    newTabLink []
-        { url = url
-        , label = el [ Font.color linkColor ] (Element.text label)
-        }
-
-
-addPost _ _ settings attr exprList =
-    case List.head <| ASTTools.exprListToStringList exprList of
-        Nothing ->
-            errorText_ "Please provide label and url"
-
-        Just argString ->
-            let
-                args =
-                    String.words argString
-
-                n =
-                    List.length args
-
-                slug =
-                    List.Extra.last args |> Maybe.withDefault "((nothing))"
-
-                label =
-                    List.take (n - 1) args |> String.join " "
-            in
-            Input.button attr
-                { onPress = Just (GetDocumentWithSlug ScriptaV2.Msg.MHStandard slug)
-                , label = Element.el [ Element.centerX, Element.centerY, Font.underline, Font.size 14, Font.color settings.linkColor ] (Element.text label)
-                }
-
-
-{-|
-
-    An ilink element ("internal link") links to another scripta document.
-
-    Usage: [ilink LINK TEXT USERNAME:SLUG]
-
-    Example: [ilink Read more about it here. jxxcarlson:smart-folders]
+    [ bold bold text ]
 
 -}
-ilink _ _ settings attr exprList =
-    case List.head <| ASTTools.exprListToStringList exprList of
-        Nothing ->
-            errorText_ "Please provide label and url"
-
-        Just argString ->
-            let
-                args =
-                    String.words argString
-
-                n =
-                    List.length args
-
-                fullSlug =
-                    List.Extra.last args |> Maybe.withDefault "((nothing))"
-
-                -- Parse the slug and fragment (e.g., "jxxcarlson:test-anchor#888111")
-                ( slug, maybeFragment ) =
-                    case String.split "#" fullSlug of
-                        [ s, f ] ->
-                            ( s, Just f )
-
-                        [ s ] ->
-                            ( s, Nothing )
-
-                        _ ->
-                            ( fullSlug, Nothing )
-
-                label =
-                    List.take (n - 1) args |> String.join " "
-
-                -- Choose the appropriate message based on whether we have a fragment
-                message =
-                    case maybeFragment of
-                        Just fragmentId ->
-                            -- For now, if there's a fragment, we'll try to select/highlight it
-                            -- This works for internal links within the same document
-                            -- For cross-document links, send the full slug with fragment
-                            if String.isEmpty slug || slug == "current" then
-                                -- Internal link within the same document - use SelectId to highlight and scroll
-                                SelectId fragmentId
-
-                            else
-                                -- Cross-document link - send full slug including fragment
-                                -- The Frontend will parse and handle the fragment after loading
-                                GetDocumentWithSlug ScriptaV2.Msg.MHStandard fullSlug
-
-                        Nothing ->
-                            GetDocumentWithSlug ScriptaV2.Msg.MHStandard slug
-            in
-            Input.button attr
-                { onPress = Just message
-                , label = Element.el [ Element.centerX, Element.centerY, Font.underline, Font.size 14, Font.color settings.linkColor ] (Element.text label)
-                }
+renderStrong : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderStrong params acc args meta =
+    Html.span (Render.Utility.rlSync meta ++ [ HA.style "font-weight" Render.Constants.boldFontWeight ]) (renderList params acc args)
 
 
-ulink _ _ settings attr exprList =
-    case List.head <| ASTTools.exprListToStringList exprList of
-        Nothing ->
-            errorText_ "Please provide label and url"
+{-| Render italic/emphasized text.
 
-        Just argString ->
-            let
-                args =
-                    String.words argString
+    [ italic emphasized text ]
 
-                n =
-                    List.length args
+    [ i emphasized text ]
 
-                label =
-                    List.take (n - 1) args |> String.join " "
+    [ emph emphasized text ]
 
-                fragment =
-                    List.drop (n - 1) args |> String.join " "
-
-                username =
-                    String.split ":" fragment |> List.head |> Maybe.withDefault "---"
-            in
-            Input.button attr
-                { onPress = Just (GetPublicDocumentFromAuthor ScriptaV2.Msg.MHStandard username fragment)
-                , label = Element.el [ Element.centerX, Element.centerY, Font.size 14, Font.color settings.linkColor ] (Element.text label)
-                }
+-}
+renderItalic : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderItalic params acc args meta =
+    Html.em (Render.Utility.rlSync meta) (renderList params acc args)
 
 
-newPost _ _ settings attr exprList =
-    case List.head <| ASTTools.exprListToStringList exprList of
-        Nothing ->
-            errorText_ "Please provide post title"
+{-| Render strikethrough text.
 
-        Just argString ->
-            let
-                args =
-                    String.words argString
-            in
-            Input.button attr
-                { -- onPress = Just (NewPost (String.join " " args))
-                  onPress = Just (NewPost "Add new post")
-                , label = Element.el [ Element.centerX, Element.centerY, Font.size 14, Font.color settings.linkColor ] (Element.text "title")
-                }
+    [ strike deleted text ]
+
+-}
+renderStrike : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderStrike params acc args meta =
+    Html.span (Render.Utility.rlSync meta ++ [ HA.style "text-decoration" "line-through" ]) (renderList params acc args)
 
 
-cslink _ _ settings attr exprList =
-    case List.head <| ASTTools.exprListToStringList exprList of
-        Nothing ->
-            errorText_ "Please: id or slug"
+{-| Render underlined text.
 
-        Just argString ->
-            let
-                args =
-                    String.words argString
+    [ underline important text ]
 
-                n =
-                    List.length args
+    [ u underlined ]
 
-                label =
-                    List.take (n - 1) args |> String.join " "
-
-                fragment =
-                    List.drop (n - 1) args |> String.join " "
-
-                username =
-                    String.split ":" fragment |> List.head |> Maybe.withDefault "---"
-            in
-            Input.button attr
-                { onPress = Just (GetPublicDocumentFromAuthor ScriptaV2.Msg.MHAsCheatSheet username fragment)
-                , label = Element.el [ Element.centerX, Element.centerY, Font.size 14, Font.color settings.linkColor ] (Element.text label)
-                }
+-}
+renderUnderline : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderUnderline params acc args meta =
+    Html.span (Render.Utility.rlSync meta ++ [ HA.style "text-decoration" "underline" ]) (renderList params acc args)
 
 
-bibitem : List Expression -> Element MarkupMsg
-bibitem exprs =
-    Element.paragraph [ Element.width Element.fill ] [ Element.text (ASTTools.exprListToStringList exprs |> String.join " " |> (\s -> "[" ++ s ++ "]")) ]
+{-| Render colored text.
+
+    [ red warning text ]
+
+    [ blue info text ]
+
+    [ green success text ]
+
+Available colors: red, blue, green, pink, magenta, violet, gray.
+
+-}
+renderColor : String -> CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderColor color params acc args meta =
+    Html.span (Render.Utility.rlSync meta ++ [ HA.style "color" color ]) (renderList params acc args)
 
 
-cite : Accumulator -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-cite acc attr str =
+{-| Render highlighted text with background color.
+
+    [ highlight important text ]
+
+    [ highlight [ color blue ] blue highlighted ]
+
+Colors: yellow (default), blue, green, pink, orange, purple, cyan, gray.
+
+-}
+renderHighlight : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderHighlight params acc args meta =
     let
-        tag : String
-        tag =
-            ASTTools.exprListToStringList str |> String.join ""
+        -- Filter out the color expression from display
+        displayArgs =
+            filterOutExpressionsOnName "color" args
 
-        id =
-            Dict.get tag acc.reference |> Maybe.map .id |> Maybe.withDefault ""
+        cssColor =
+            case params.theme of
+                V3.Types.Light ->
+                    "#ffff00"
+
+                V3.Types.Dark ->
+                    "#CC7000"
     in
-    Element.paragraph
-        ([ Element.width Element.fill
-
-         -- , Events.onClick (SendLineNumber _)
-         , Events.onClick (SelectId id)
-         , Font.color (Element.rgb 0.2 0.2 1.0)
-         , Font.bold
-         ]
-            ++ attr
+    Html.span
+        (Render.Utility.rlSync meta
+            ++ [ HA.style "background-color" cssColor
+               , HA.style "padding-left" "0.25em"
+               , HA.style "padding-right" "0.25em"
+               ]
         )
-        [ Element.text (tag |> (\s -> "[" ++ s ++ "]")) ]
+        (renderList params acc displayArgs)
 
 
-code : Int -> b -> RenderSettings -> { d | id : String } -> String -> Element msg
-code g a s m str =
-    verbatimElement s (codeStyle s) m str
-
-
-math : Int -> { a | mathMacroDict : ETeX.MathMacros.MathMacroDict } -> Render.Settings.RenderSettings -> { b | id : String } -> String -> Element msg
-math g a s m str =
-    Element.el
-        (Render.Sync.highlightIfIdSelected m.id s [])
-        (mathElement g a s m str)
-
-
-chem : Int -> { a | mathMacroDict : ETeX.MathMacros.MathMacroDict } -> Render.Settings.RenderSettings -> { b | id : String } -> String -> Element msg
-chem g a s m str =
-    Element.el
-        (Render.Sync.highlightIfIdSelected m.id s [])
-        (mathElement g a s m ("\\ce{" ++ str ++ "}"))
-
-
-table : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-table g acc s attr rows =
-    Element.column [ Element.spacing 8 ] (List.map (tableRow g acc s attr) rows)
-
-
-tableRow : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> Expression -> Element MarkupMsg
-tableRow g acc s attr expr =
-    case expr of
-        Fun "tableRow" items _ ->
-            Element.row [ spacing 8 ] (List.map (tableItem g acc s attr) items)
-
-        _ ->
-            Element.none
-
-
-tableItem : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> Expression -> Element MarkupMsg
-tableItem g acc s attr expr =
-    case expr of
-        Fun "tableItem" exprList _ ->
-            Element.paragraph [ Element.width (Element.px 100) ] (List.map (render g acc s attr) exprList)
-
-        _ ->
-            Element.none
-
-
-skip exprList =
-    let
-        numVal : String -> Int
-        numVal str =
-            String.toInt str |> Maybe.withDefault 0
-
-        f : String -> Element MarkupMsg
-        f str =
-            column [ Element.spacingXY 0 (numVal str) ] [ Element.text "" ]
-    in
-    f1 f exprList
-
-
-vspace _ _ _ _ exprList =
-    let
-        h =
-            ASTTools.exprListToStringList exprList |> String.join "" |> String.toInt |> Maybe.withDefault 1
-    in
-    -- Element.column [ Element.paddingXY 0 100 ] (Element.text "-")
-    Element.column [ Element.height (Element.px h) ] [ Element.text "" ]
-
-
-par _ _ _ _ _ =
-    Element.column [ Element.height (Element.px 5) ] [ Element.text "" ]
-
-
-indent _ _ _ _ _ =
-    Element.el [ Element.height (Element.px 5) ] (Render.Html.Math.mathText 0 "24px" "abc" Render.Html.Math.InlineMathMode "\\quad")
-
-
-strong g acc s attr exprList =
-    simpleElement [ Font.bold ] g acc s attr exprList
-
-
-renderScheme : a -> b -> c -> d -> List Expression -> Element msg
-renderScheme g acc s attr exprList =
-    let
-        inputText : String
-        inputText =
-            ASTTools.exprListToStringList exprList |> String.join " "
-    in
-    Element.text (MicroScheme.Interpreter.runProgram ";" inputText)
-
-
-renderComputation :
-    Int
-    -> Accumulator
-    -> RenderSettings
-    -> List (Element.Attribute MarkupMsg)
-    -> List Expression
-    -> Element MarkupMsg
-renderComputation g acc s attr exprList =
-    let
-        inputText : String
-        inputText =
-            ASTTools.exprListToStringList exprList |> String.join " "
-
-        -- TODO: fix id
-    in
-    Render.Math.evalMath g { id = "foo" } inputText
-
-
-renderDataTools : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-renderDataTools g acc s attr exprList =
-    let
-        args =
-            ASTTools.exprListToStringList exprList
-                |> String.join " "
-                |> String.split " "
-                |> List.map (\item -> String.trim item)
-    in
-    renderDTValue (eval s.data args)
-
-
-hd =
-    """
-S.Mag,0.032,170
-L.Mag,0.034,290
-NGC.6822,0.214,-130
-NGC.598,0.263,-70
-NGC.221,0.275,-185
-NGC.224,0.275,-220
-NGC.5457,0.45,200
-NGC.4736,0.5,290
-NGC.5194,0.5,270
-NGC.4449,0.63,200
-NGC.4214,0.8,300
-NGC.3031,0.9,-30
-NGC.3627,0.9,650
-NGC.4826,0.9,150
-NGC.5236,0.9,500
-NGC.1068,1.0,920
-NGC.5055,1.1,450
-NGC.7331,1.1,500
-NGC.4258,1.4,500
-NGC.4151,1.7,960
-NGC.4382,2.0,500
-NGC.4472,2.0,850
-NGC.4486,2.0,800
-NGC.4649,2.0,1090
-NGC.3115,2.2,1000
-"""
-
-
-eval : Dict String String -> List String -> DTValue
-eval dict args_ =
-    case List.Extra.uncons args_ of
-        Nothing ->
-            DTError "No data source given"
-
-        Just ( src, args ) ->
-            --if String.left 7 src == "source:" then
-            --    evalAuxDT dict (String.dropLeft 7 src) args
-            evalAuxDT dict src args
-
-
-renderDTValue : DTValue -> Element msg
-renderDTValue dtValue =
-    case dtValue of
-        DTString str ->
-            Element.text str
-
-        DTStringList strList ->
-            Element.column [ Element.spacing 8 ] (List.map (\str -> Element.text str) strList)
-
-        DTInt int ->
-            Element.text <| String.fromInt int
-
-        DTError str ->
-            Element.el [ Font.color (Element.rgb 0.8 0 0) ] (Element.text <| "Error: " ++ str)
-
-
-evalAuxDT : Dict String String -> String -> List String -> DTValue
-evalAuxDT dict src args =
-    case Dict.get src dict of
-        Nothing ->
-            DTError ("No data source named '" ++ src ++ "'")
-
-        Just data ->
-            case args of
-                [] ->
-                    DTError "No arguments given"
-
-                [ "rows" ] ->
-                    List.length (String.lines data) |> DTInt
-
-                [ "columns" ] ->
-                    data
-                        |> String.lines
-                        |> List.map (String.split ",")
-                        |> List.filter (\row -> row /= [ "" ])
-                        |> List.Extra.transpose
-                        |> List.length
-                        |> DTInt
-
-                [ "lines", from_, to_ ] ->
-                    data
-                        |> String.lines
-                        |> List.take (String.toInt to_ |> Maybe.withDefault 2 |> (\x -> x))
-                        |> List.drop (String.toInt from_ |> Maybe.withDefault 1 |> (\x -> x - 1))
-                        |> DTStringList
-
-                [ "header" ] ->
-                    data
-                        |> String.lines
-                        |> List.head
-                        |> Maybe.withDefault ""
-                        |> String.split ","
-                        |> List.indexedMap (\i str -> String.fromInt (i + 1) ++ ": " ++ str)
-                        |> DTStringList
-
-                _ ->
-                    DTError "Invalid arguments given"
-
-
-type DTValue
-    = DTString String
-    | DTStringList (List String)
-    | DTInt Int
-    | DTError String
-
-
-renderButton _ _ _ attr exprList =
-    let
-        arguments : List String
-        arguments =
-            ASTTools.exprListToStringList exprList
-                |> String.join " "
-                |> String.split ","
-                |> List.map (\item -> String.trim item)
-                |> List.filter (\item -> item /= "")
-    in
-    case arguments of
-        [ labelText, rawMsg ] ->
-            case Dict.get rawMsg msgDict of
-                Nothing ->
-                    Input.button attr { onPress = Just MMNoOp, label = Element.text "Nothing (1)" }
-
-                Just msg ->
-                    Input.button
-                        ([ Font.size 14
-                         , Font.color (Element.rgb 1 1 1)
-                         , Element.padding 8
-                         , Background.color (Element.rgb 0.1 0.1 0.9)
-                         ]
-                            ++ attr
-                        )
-                        { onPress = Just msg, label = Element.text labelText }
-
-        _ ->
-            Input.button [] { onPress = Just MMNoOp, label = Element.text "Nothing (2)" }
-
-
-msgDict : Dict String MarkupMsg
-msgDict =
+highlightColorDict : Dict String String
+highlightColorDict =
     Dict.fromList
-        [ ( "CopyDocument", RequestCopyOfDocument )
-        , ( "ToggleIndex", RequestToggleIndexSize )
+        [ ( "yellow", "#ffff00" )
+        , ( "blue", "#b4b4ff" )
+        , ( "green", "#b4ffb4" )
+        , ( "pink", "#ffb4b4" )
+        , ( "orange", "#ffd494" )
+        , ( "purple", "#d4b4ff" )
+        , ( "cyan", "#b4ffff" )
+        , ( "gray", "#d4d4d4" )
         ]
 
 
-var g acc s attr exprList =
-    simpleElement [] g acc s attr exprList
+filterExpressionsOnName : String -> List Expression -> List Expression
+filterExpressionsOnName name exprs =
+    List.filter (hasName name) exprs
 
 
-brackets g acc s attr exprList =
-    Element.paragraph [ Element.spacing 8 ] [ Element.text "[", simpleElement [] g acc s attr exprList, Element.text " ]" ]
+filterOutExpressionsOnName : String -> List Expression -> List Expression
+filterOutExpressionsOnName name exprs =
+    List.filter (hasName name >> not) exprs
 
 
-rightBracket =
-    Element.text "]"
-
-
-leftBracket =
-    Element.text "["
-
-
-backTick =
-    Element.text "`"
-
-
-italic : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-italic g acc s attr exprList =
-    simpleElement [ Font.italic, Element.paddingEach { left = 0, right = 2, top = 0, bottom = 0 } ] g acc s attr exprList
-
-
-marked : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-marked g acc s attr exprList =
-    case exprList of
-        --[] ->
-        --    Element.none
-        first :: [] ->
-            simpleElement [] g acc s attr [ first ]
-
-        (Text str _) :: rest ->
-            simpleElement [ htmlId str ] g acc s attr rest
+hasName : String -> Expression -> Bool
+hasName name expr =
+    case expr of
+        Fun n _ _ ->
+            n == name
 
         _ ->
-            Element.none
+            False
 
 
-quote : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-quote g acc s attr exprList =
-    let
-        meta =
-            { begin = 0, end = 1, index = 0, id = "qq" }
-
-        leftQuote =
-            String.fromChar '"'
-
-        rightQuote =
-            String.fromChar '"'
-    in
-    Element.paragraph [] (List.map (render g acc s attr) (Text leftQuote meta :: exprList ++ [ Text rightQuote meta ]))
-
-
-anchor : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-anchor g acc s attr exprList =
-    -- The CSS class (if any) is passed through the attr parameter
-    -- We combine it with the underline style for anchors
-    Element.paragraph (Font.underline :: attr) (List.map (render g acc s []) exprList)
-
-
-mark1 : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-mark1 g acc s attr exprList =
-    case exprList of
-        [ Text str _, Fun "anchor" list _ ] ->
-            Element.paragraph
-                [ htmlId (String.trim str), Font.underline ]
-                (List.map (render g acc s attr) list)
+getTextFromExpr : Expression -> Maybe String
+getTextFromExpr expr =
+    case expr of
+        Fun _ args _ ->
+            args |> List.filterMap getTextContent |> List.head
 
         _ ->
-            Element.text "Parse error in element mark?"
+            Nothing
 
 
-qed _ _ _ _ _ =
-    Element.el [ Font.bold, Element.paddingEach { left = 0, right = 2, top = 0, bottom = 0 } ] (Element.text "Q.E.D.")
+{-| Render a hyperlink.
 
+    [ link Label https :// example.com ]
 
-boldItalic g acc s attr exprList =
-    simpleElement [ Font.italic, Font.bold, Element.paddingEach { left = 0, right = 2, top = 0, bottom = 0 } ] g acc s attr exprList
-
-
-title g acc s attr exprList =
-    simpleElement [ Font.size Constants.titleFontSize, Element.paddingEach { left = 0, right = 2, top = 0, bottom = 0 } ] g acc s attr exprList
-
-
-term g acc s attr exprList =
-    simpleElement [ Font.italic, Element.paddingEach { left = 0, right = 2, top = 0, bottom = 0 } ] g acc s attr exprList
-
-
-footnote : Accumulator -> RenderSettings -> List Expression -> Element MarkupMsg
-footnote acc settings exprList =
-    case exprList of
-        (Text _ meta) :: [] ->
-            case Dict.get meta.id acc.footnoteNumbers of
-                Just k ->
-                    Element.link
-                        [ Font.color (Render.Theme.getElementColor settings.theme .footnote)
-
-                        -- Font.color (Element.rgb 0 0 0.7)
-                        , Font.bold
-                        , Events.onClick (SelectId (meta.id ++ "_"))
-                        ]
-                        { url = Utility.internalLink (meta.id ++ "_")
-                        , label = Element.el [] (Element.html <| Html.node "sup" [] [ Html.text (String.fromInt k) ])
-                        }
-
-                -- Element.el (htmlId meta.id :: []) (Element.text (String.fromInt k))
-                _ ->
-                    Element.none
-
-        _ ->
-            Element.none
-
-
-
--- Element.el (htmlId meta.id :: formatList) (Element.text str)
-
-
-emph g acc s attr exprList =
-    simpleElement [ Font.italic, Element.paddingEach { left = 0, right = 2, top = 0, bottom = 0 } ] g acc s attr exprList
-
-
-
--- COLOR FUNCTIONS
-
-
-gray g acc s attr exprList =
-    simpleElement [ Font.color (Element.rgb 0.5 0.5 0.5) ] g acc s attr exprList
-
-
-red g acc s attr exprList =
-    simpleElement [ Font.color (Element.rgb255 200 0 0) ] g acc s attr exprList
-
-
-blue g acc s attr exprList =
-    simpleElement [ Font.color (Element.rgb255 0 0 200) ] g acc s attr exprList
-
-
-green g acc s attr exprList =
-    simpleElement [ Font.color (Element.rgb255 0 140 0) ] g acc s attr exprList
-
-
-magenta g acc s attr exprList =
-    simpleElement [ Font.color (Element.rgb255 255 51 192) ] g acc s attr exprList
-
-
-pink g acc s attr exprList =
-    simpleElement [ Font.color (Element.rgb255 255 100 100) ] g acc s attr exprList
-
-
-violet g acc s attr exprList =
-    simpleElement [ Font.color (Element.rgb255 150 100 255) ] g acc s attr exprList
-
-
-highlight g acc s attr exprList_ =
-    let
-        colorName =
-            ASTTools.filterExpressionsOnName "color" exprList_
-                |> List.head
-                |> Maybe.andThen ASTTools.getText
-                |> Maybe.withDefault "yellow"
-                |> String.trim
-
-        exprList =
-            ASTTools.filterOutExpressionsOnName "color" exprList_
-
-        colorElement =
-            Dict.get colorName colorDict |> Maybe.withDefault (Element.rgb255 255 255 0)
-    in
-    simpleElement [ Background.color colorElement, Element.paddingXY 6 3 ] g acc s attr exprList
-
-
-colorDict : Dict String Element.Color
-colorDict =
-    Dict.fromList
-        [ ( "yellow", Element.rgb255 255 255 0 )
-        , ( "blue", Element.rgb255 180 180 255 )
-        ]
-
-
-ref acc settings exprList =
-    let
-        key =
-            -- TODO: review the change below. Is it really OK to not squeeze the hyphens?
-            --List.map ASTTools.getText exprList  |> Maybe.Extra.values |> String.join "" |> String.trim |> String.replace "-" ""
-            List.map ASTTools.getText exprList |> Maybe.Extra.values |> String.join "" |> String.trim
-
-        ref_ =
-            Dict.get key acc.reference
-
-        val =
-            ref_ |> Maybe.map .numRef |> Maybe.withDefault (key |> String.replace "-" " " |> String.Extra.toTitleCase)
-
-        id =
-            ref_ |> Maybe.map .id |> Maybe.withDefault "no-id"
-    in
-    Element.link
-        [ Font.color settings.linkColor
-        , Font.semiBold
-        , Events.onClick (SelectId id)
-        ]
-        { url = Utility.internalLink id
-        , label = Element.paragraph [] [ Element.text val ]
-        }
-
-
-{-|
-
-    \reflink{LINK_TEXT LABEL}
+    [ link https :// example.com ]
 
 -}
-reflink : RenderSettings -> Accumulator -> List Expression -> Element MarkupMsg
-reflink settings acc exprList =
+renderLink : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderLink _ _ args meta =
     let
+        -- Extract all text from args and join with spaces
         argString =
-            List.map ASTTools.getText exprList |> Maybe.Extra.values |> String.join " "
+            args
+                |> List.filterMap getTextContent
+                |> String.join " "
 
-        args =
+        words =
             String.words argString
 
         n =
-            List.length args
-
-        key =
-            List.drop (n - 1) args |> String.join ""
-
-        label =
-            List.take (n - 1) args |> String.join " "
-
-        ref_ =
-            Dict.get key acc.reference
-
-        id =
-            ref_ |> Maybe.map .id |> Maybe.withDefault ""
+            List.length words
     in
-    Element.link
-        [ Font.color settings.linkColor
-        , Font.semiBold
-        , Events.onClick (SelectId id)
-        ]
-        { url = Utility.internalLink id
-        , label = Element.paragraph [] [ Element.text label ]
-        }
+    if n == 0 then
+        Html.span [ HA.id meta.id ] [ Html.text "link: missing url" ]
+
+    else if n == 1 then
+        -- Single word is URL only
+        let
+            url =
+                String.join "" words
+        in
+        Html.a [ HA.id meta.id, HA.href url, HA.target "_blank" ] [ Html.text url ]
+
+    else
+        -- Multiple words: last word is URL, rest is label
+        let
+            label =
+                List.take (n - 1) words |> String.join " "
+
+            url =
+                List.drop (n - 1) words |> String.join ""
+        in
+        Html.a [ HA.id meta.id, HA.href url, HA.target "_blank" ] [ Html.text label ]
 
 
-eqref : Accumulator -> RenderSettings -> List Expression -> Element MarkupMsg
-eqref acc settings exprList =
-    let
-        key =
-            List.map ASTTools.getText exprList
-                |> Maybe.Extra.values
-                |> String.join ""
-                |> String.trim
-                |> String.replace "label:" ""
+{-| Render a URL as a clickable link.
 
-        ref_ =
-            Dict.get key acc.reference
+    [ href https :// example.com ]
 
-        val =
-            ref_ |> Maybe.map .numRef |> Maybe.withDefault ""
-
-        id =
-            ref_ |> Maybe.map .id |> Maybe.withDefault ""
-    in
-    Element.link
-        [ Font.color settings.linkColor
-        , Events.onClick (SelectId id)
-
-        --, Events.onClick (HighlightId id)
-        ]
-        { url = Utility.internalLink id
-        , label = Element.paragraph [] [ Element.text ("(" ++ val ++ ")") ]
-        }
-
-
-
--- FONT STYLE FUNCTIONS
-
-
-strike g acc s attr exprList =
-    simpleElement [ Font.strike ] g acc s attr exprList
-
-
-underscore _ _ _ _ _ =
-    Element.el [] (Element.text "_")
-
-
-underline g acc s attr exprList =
-    simpleElement [ Font.underline ] g acc s attr exprList
-
-
-errorHighlight g acc s attr exprList =
-    simpleElement [ Background.color (Element.rgb255 255 200 200), Element.paddingXY 4 2 ] g acc s attr exprList
-
-
-
--- HELPERS
-
-
-simpleElement : List (Element.Attribute MarkupMsg) -> Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> List Expression -> Element MarkupMsg
-simpleElement formatList g acc s attr exprList =
-    Element.paragraph formatList (List.map (render g acc s attr) exprList)
-
-
-{-| For one-element functions
 -}
-f1 : (String -> Element MarkupMsg) -> List Expression -> Element MarkupMsg
-f1 f exprList =
-    case ASTTools.exprListToStringList exprList of
-        -- TODO: temporary fix: parse is producing the args in reverse order
-        arg1 :: _ ->
-            f arg1
+renderHref : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderHref params acc args meta =
+    case args of
+        [ Text url _ ] ->
+            Html.a [ HA.id meta.id, HA.href url, HA.target "_blank" ] [ Html.text url ]
 
         _ ->
-            el [ Font.color errorColor ] (Element.text "Invalid arguments")
+            Html.span [ HA.id meta.id ] (renderList params acc args)
 
 
-verbatimElement settings formatList meta str =
-    Element.el (Font.size 13 :: htmlId meta.id :: Element.height (Element.px 11) :: Background.color settings.codeBackground :: formatList) (Element.text str)
+{-| Render an inline image.
+
+    [ image https :// example.com / photo.jpg ]
+
+-}
+renderImage : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderImage params _ args meta =
+    case args of
+        [ Text src _ ] ->
+            Html.img
+                [ HA.id meta.id
+                , HA.src src
+                , HA.style "max-width" (String.fromInt params.width ++ "px")
+                ]
+                []
+
+        _ ->
+            Html.text "[image: invalid args]"
 
 
-htmlId str =
-    Element.htmlAttribute (Html.Attributes.id str)
+{-| Render an internal document link.
+
+    [ ilink Section 1 sec1 ]
+
+Clicking navigates within the document.
+
+-}
+renderIlink : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderIlink params acc args meta =
+    let
+        -- Extract all text content and split into words. Tokens prefixed
+        -- "with:" are key:value args (slug for the backlinks table); they
+        -- are stripped from the visible label and from target-id selection
+        -- here, but the source body still contains them so they round-trip
+        -- through save unchanged. Of the remaining words, the last is the
+        -- targetId; the rest form the label.
+        allText =
+            List.map exprText args |> String.join " "
+
+        ( withTokens, positionalWords ) =
+            String.words allText
+                |> List.partition (String.startsWith "with:")
+
+        slug =
+            List.head withTokens
+                |> Maybe.map (String.dropLeft 5)
+    in
+    case List.reverse positionalWords of
+        targetId :: labelWords ->
+            Html.a
+                [ HA.id (Maybe.withDefault meta.id slug)
+                , HA.href ("#" ++ targetId)
+                , HE.custom "click"
+                    (Decode.succeed
+                        { message = GoToDocument targetId meta
+                        , stopPropagation = True
+                        , preventDefault = True
+                        }
+                    )
+                , HA.style "color"
+                    (case params.theme of
+                        V3.Types.Light ->
+                            "#0066cc"
+
+                        V3.Types.Dark ->
+                            "#66b3ff"
+                    )
+                , HA.style "text-decoration" "none"
+                , HA.style "cursor" "pointer"
+                ]
+                [ Html.text (String.join " " (List.reverse labelWords)) ]
+
+        _ ->
+            Html.span [ HA.id meta.id ] (renderList params acc args)
 
 
-errorText index str =
-    Element.el [ Font.color (Element.rgb255 200 40 40) ] (Element.text <| "(" ++ String.fromInt index ++ ") not implemented: " ++ str)
+{-| Render a wikilink. Args arrive with ID first, then label words.
+Reshuffle so ID is last (to match ilink's trailing-ID convention), then
+delegate to renderIlink.
+-}
+renderWikilink : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderWikilink params acc args meta =
+    renderIlink params acc (moveFirstTextToEnd args) meta
 
 
-errorText_ str =
-    Element.el [ Font.color (Element.rgb255 200 40 40) ] (Element.text str)
+moveFirstTextToEnd : List Expression -> List Expression
+moveFirstTextToEnd args =
+    case args of
+        [ Text first firstMeta ] ->
+            [ Text first firstMeta, Text first firstMeta ]
+
+        (Text first firstMeta) :: rest ->
+            dropLeadingWhitespace rest ++ [ Text first firstMeta ]
+
+        _ ->
+            args
 
 
-mathElement generation acc s meta str =
-    Render.Math.mathText (Render.ThemeHelpers.themeAsStringFromSettings s) generation "width" meta.id Render.Math.InlineMathMode (ETeX.Transform.evalStr acc.mathMacroDict str)
+dropLeadingWhitespace : List Expression -> List Expression
+dropLeadingWhitespace args =
+    case args of
+        (Text s m) :: rest ->
+            if String.trim s == "" then
+                dropLeadingWhitespace rest
+
+            else
+                Text s m :: rest
+
+        _ ->
+            args
 
 
+exprText : Expression -> String
+exprText expr =
+    case expr of
+        Text s _ ->
+            s
 
--- DEFINITIONS
+        Fun _ children _ ->
+            List.map exprText children |> String.join " "
+
+        VFun _ content _ ->
+            content
+
+        ExprList _ children _ ->
+            List.map exprText children |> String.join " "
 
 
-codeStyle : RenderSettings -> List (Element.Attribute msg)
-codeStyle settings =
-    [ Font.family
-        [ Font.typeface "Inconsolata"
-        , Font.monospace
+{-| Render an index entry (hidden in output).
+
+    [ index term ]
+
+The term is collected for index generation but not displayed.
+
+-}
+renderIndex : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderIndex _ _ _ meta =
+    Html.span [ HA.id meta.id, HA.style "display" "none" ] []
+
+
+{-| Render a cross-reference to a labeled element.
+
+    [ ref theorem1 ]
+
+Displays the number of the referenced element.
+
+-}
+renderRef : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderRef _ acc args meta =
+    case args of
+        [ Text refId _ ] ->
+            let
+                trimmedRefId =
+                    String.trim refId
+            in
+            case Dict.get trimmedRefId acc.reference of
+                Just { id, numRef } ->
+                    -- Use id from reference dict as the scroll target
+                    Html.a
+                        [ HA.id meta.id
+                        , HA.href ("#" ++ id)
+                        , HE.custom "click" (Decode.succeed { message = CitationClick { targetId = id, returnId = meta.id }, stopPropagation = True, preventDefault = True })
+                        , HA.style "color" "#0066cc"
+                        , HA.style "text-decoration" "none"
+                        , HA.style "cursor" "pointer"
+                        , HA.style "padding" "2px 4px"
+                        , HA.style "margin" "-2px -4px"
+                        ]
+                        [ Html.text numRef ]
+
+                Nothing ->
+                    Html.span [ HA.id meta.id, HA.style "color" "red" ] [ Html.text ("??" ++ trimmedRefId) ]
+
+        _ ->
+            Html.span [ HA.id meta.id ] [ Html.text "[ref: invalid]" ]
+
+
+{-| Render a cross-reference to an equation.
+
+    [ eqref eq1 ]
+
+Displays as "(N)" where N is the equation number, linking to the equation.
+
+-}
+renderMathRef : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderMathRef _ acc args meta =
+    case args of
+        [ Text refId _ ] ->
+            let
+                trimmedRefId =
+                    String.trim refId
+            in
+            case Dict.get trimmedRefId acc.reference of
+                Just { id, numRef } ->
+                    Html.a
+                        [ HA.id meta.id
+                        , HA.href ("#" ++ id)
+                        , HE.custom "click" (Decode.succeed { message = CitationClick { targetId = id, returnId = meta.id }, stopPropagation = True, preventDefault = True })
+                        , HA.style "color" "#0066cc"
+                        , HA.style "text-decoration" "none"
+                        , HA.style "cursor" "pointer"
+                        , HA.style "padding" "2px 4px"
+                        , HA.style "margin" "-2px -4px"
+                        ]
+                        [ Html.text ("(" ++ numRef ++ ")") ]
+
+                Nothing ->
+                    Html.span [ HA.id meta.id, HA.style "color" "red" ] [ Html.text ("(??" ++ trimmedRefId ++ ")") ]
+
+        _ ->
+            Html.span [ HA.id meta.id ] [ Html.text "[eqref: invalid]" ]
+
+
+{-| Render a citation.
+
+    [ cite einstein1905 ]
+
+Displays as "[key]".
+
+-}
+renderCite : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderCite _ acc args meta =
+    case args of
+        [ Text key _ ] ->
+            let
+                trimmedKey =
+                    String.trim key
+
+                -- Look up the bibitem number in the bibliography dictionary
+                ( targetId, displayNumber ) =
+                    case Dict.get trimmedKey acc.bibliography of
+                        Just (Just number) ->
+                            ( trimmedKey ++ ":" ++ String.fromInt number, String.fromInt number )
+
+                        _ ->
+                            ( trimmedKey, "?" )
+            in
+            Html.a
+                [ HA.id meta.id
+                , HA.href ("#" ++ targetId)
+                , HE.custom "click" (Decode.succeed { message = CitationClick { targetId = targetId, returnId = meta.id }, stopPropagation = True, preventDefault = True })
+                , HA.style "color" "#0066cc"
+                , HA.style "text-decoration" "none"
+                , HA.style "cursor" "pointer"
+                ]
+                [ Html.text ("[" ++ displayNumber ++ "]") ]
+
+        _ ->
+            Html.span [ HA.id meta.id ] [ Html.text "[cite: invalid]" ]
+
+
+{-| Render superscript text.
+
+    [ sup 2 ]
+
+-}
+renderSup : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderSup params acc args meta =
+    Html.sup (Render.Utility.rlSync meta) (renderList params acc args)
+
+
+{-| Render subscript text.
+
+    [ sub i ]
+
+-}
+renderSub : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderSub params acc args meta =
+    Html.sub (Render.Utility.rlSync meta) (renderList params acc args)
+
+
+{-| Render a term (italicized, for definitions).
+
+    [term entropy]
+    [term prime number list-as:number, prime]
+
+The list-as: property is stripped from display (it only affects index listing).
+
+-}
+renderIndex_ : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderIndex_ _ _ args meta =
+    let
+        -- Get all text content and strip list-as: property
+        fullText =
+            args
+                |> List.filterMap getExprText
+                |> String.join " "
+
+        displayText =
+            case String.split "list-as:" fullText of
+                termPart :: _ ->
+                    String.trim termPart
+
+                [] ->
+                    fullText
+    in
+    Html.em
+        --(Render.Utility.rlSync meta
+        --    ++ [ HA.style "padding-right" "2px" ]
+        --)
+        [ HA.style "padding-right" "2px" ]
+        [ Html.text displayText ]
+
+
+{-| Extract text content from an expression.
+-}
+getExprText : Expression -> Maybe String
+getExprText expr =
+    case expr of
+        Text str _ ->
+            Just str
+
+        _ ->
+            Nothing
+
+
+{-| Render a hidden term (for index only, not displayed).
+
+    [ term_ hidden entry ]
+
+-}
+renderTermHidden : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderTermHidden _ _ _ meta =
+    Html.span [ HA.id meta.id, HA.style "display" "none" ] []
+
+
+{-| Render vertical space.
+
+    [ vspace 20 ]
+
+    [ break 10 ]
+
+Argument is height in pixels.
+
+-}
+renderVspace : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderVspace _ _ args meta =
+    let
+        h =
+            args
+                |> List.filterMap getTextContent
+                |> String.concat
+                |> String.toInt
+                |> Maybe.withDefault 1
+    in
+    Html.div
+        [ HA.id meta.id
+        , HA.style "height" (String.fromInt h ++ "px")
         ]
-    , Font.unitalicized
-    , Font.color settings.codeColor
-    , Background.color settings.codeBackground
-    , Element.paddingEach { left = 2, right = 2, top = 0, bottom = 0 }
-    ]
+        []
 
 
-errorColor =
-    Element.rgb 0.8 0 0
+getTextContent : Expression -> Maybe String
+getTextContent expr =
+    case expr of
+        Text str _ ->
+            Just str
+
+        _ ->
+            Nothing
 
 
-linkColor =
-    Element.rgb 0 0 0.8
+{-| Render bold italic text.
+
+    [ bi bold and italic ]
+
+    [ boldItalic text ]
+
+-}
+renderBoldItalic : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderBoldItalic params acc args meta =
+    Html.span
+        (Render.Utility.rlSync meta
+            ++ [ HA.style "font-weight" "bold"
+               , HA.style "font-style" "italic"
+               ]
+        )
+        (renderList params acc args)
+
+
+{-| Render a variable (no special formatting).
+
+    [ var x ]
+
+-}
+renderVar : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderVar params acc args meta =
+    Html.span (Render.Utility.rlSync meta) (renderList params acc args)
+
+
+{-| Render inline title text (32px).
+
+    [ title Document Title ]
+
+-}
+renderTitle : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderTitle params acc args meta =
+    Html.span
+        (Render.Utility.rlSync meta
+            ++ [ HA.style "font-size" "2em" ]
+        )
+        (renderList params acc args)
+
+
+{-| Render an inline subheading (18px).
+
+    [ subheading Section Name ]
+
+    [ sh Section Name ]
+
+-}
+renderSubheading : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderSubheading params acc args meta =
+    Html.div (Render.Utility.rlSync meta)
+        [ Html.p
+            [ HA.style "font-size" "1.125em"
+            , HA.style "margin-top" "8px"
+            , HA.style "margin-bottom" "0"
+            ]
+            (renderList params acc args)
+        ]
+
+
+{-| Render a small subheading (16px, italic).
+
+    [ smallsubheading Minor Heading ]
+
+    [ ssh Minor Heading ]
+
+-}
+renderSmallSubheading : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderSmallSubheading params acc args meta =
+    Html.div (Render.Utility.rlSync meta)
+        [ Html.p
+            [ HA.style "font-size" "1em"
+            , HA.style "font-style" "italic"
+            , HA.style "margin-top" "8px"
+            , HA.style "margin-bottom" "0"
+            ]
+            (renderList params acc args)
+        ]
+
+
+{-| Render large text (18px).
+
+    [ large larger text ]
+
+-}
+renderLarge : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderLarge params acc args meta =
+    Html.span
+        (Render.Utility.rlSync meta
+            ++ [ HA.style "font-size" "1.5em" ]
+        )
+        (renderList params acc args)
+
+
+{-| Render Q.E.D. marker (end of proof).
+
+    [ qed ]
+
+-}
+renderQed : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderQed _ _ _ meta =
+    Html.span
+        (Render.Utility.rlSync meta
+            ++ [ HA.style "font-weight" "bold" ]
+        )
+        [ Html.text "Q.E.D." ]
+
+
+{-| Render error-highlighted text (red background).
+
+    [ errorHighlight problematic text ]
+
+-}
+renderErrorHighlight : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderErrorHighlight params acc args meta =
+    Html.span
+        (Render.Utility.rlSync meta
+            ++ [ HA.style "background-color" "#ffc8c8"
+               , HA.style "padding" "2px 4px"
+               ]
+        )
+        (renderList params acc args)
+
+
+{-| Render a special character.
+
+    [mdash] → —
+    [ndash] → –
+    [dollarSign] or [ds] → $
+    [backTick] or [bt] → `
+    [rb] → ]
+    [lb] → [
+
+-}
+renderChar : String -> CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderChar char _ _ _ meta =
+    Html.span (Render.Utility.rlSync meta) [ Html.text char ]
+
+
+{-| Render content in square brackets.
+
+    [ brackets content ]
+
+-}
+renderBracket : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderBracket params acc args meta =
+    Html.span (Render.Utility.rlSync meta)
+        (Html.text "[" :: renderList params acc args ++ [ Html.text "]" ])
+
+
+{-| Render an empty checkbox ☐.
+
+    [ box ]
+
+-}
+renderBox : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderBox _ _ _ meta =
+    Html.span (Render.Utility.rlSync meta ++ [ HA.style "font-size" "20px" ]) [ Html.text "☐" ]
+
+
+{-| Render a checked checkbox ☑.
+
+    [ cbox ]
+
+-}
+renderCbox : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderCbox _ _ _ meta =
+    Html.span (Render.Utility.rlSync meta ++ [ HA.style "font-size" "20px" ]) [ Html.text "☑" ]
+
+
+{-| Render a red empty checkbox ☐.
+
+    [ rbox ]
+
+-}
+renderRbox : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderRbox _ _ _ meta =
+    Html.span (Render.Utility.rlSync meta ++ [ HA.style "font-size" "20px", HA.style "color" "#b30000" ]) [ Html.text "☐" ]
+
+
+{-| Render a red checked checkbox ☑.
+
+    [ crbox ]
+
+-}
+renderCrbox : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderCrbox _ _ _ meta =
+    Html.span (Render.Utility.rlSync meta ++ [ HA.style "font-size" "20px", HA.style "color" "#b30000" ]) [ Html.text "☑" ]
+
+
+{-| Render a filled box ■.
+
+    [ fbox ]
+
+-}
+renderFbox : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderFbox _ _ _ meta =
+    Html.span (Render.Utility.rlSync meta ++ [ HA.style "font-size" "24px" ]) [ Html.text "■" ]
+
+
+{-| Render a red filled box ■.
+
+    [ frbox ]
+
+-}
+renderFrbox : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderFrbox _ _ _ meta =
+    Html.span (Render.Utility.rlSync meta ++ [ HA.style "font-size" "24px", HA.style "color" "#b30000" ]) [ Html.text "■" ]
+
+
+renderXbox : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderXbox _ _ _ meta =
+    Html.span (Render.Utility.rlSync meta ++ [ HA.style "font-size" "20px" ]) [ Html.text "☒" ]
+
+
+{-| Render nothing (hidden content).
+
+Used for: hide, author, date, today, lambda, setcounter, label, tags.
+
+-}
+renderHidden : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderHidden _ _ _ meta =
+    Html.span [ HA.id meta.id, HA.style "display" "none" ] []
+
+
+{-| Render a paragraph break.
+
+    [//]
+    [par]
+
+-}
+renderPar : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderPar _ _ _ meta =
+    Html.div [ HA.id meta.id, HA.style "height" "5px" ] []
+
+
+renderPar2 : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderPar2 _ _ _ meta =
+    Html.div [ HA.id meta.id, HA.style "height" "10px" ] []
+
+
+{-| Render inline indentation (2em).
+
+    [ indent ]
+
+-}
+renderIndent : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderIndent _ _ _ meta =
+    Html.span [ HA.id meta.id, HA.style "margin-left" "2em" ] []
+
+
+{-| Render quoted text with curly quotes.
+
+    [ quote text here ]
+
+-}
+renderQuote : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderQuote params acc args meta =
+    Html.span (Render.Utility.rlSync meta)
+        (Html.text "“" :: renderList params acc args ++ [ Html.text "”" ])
+
+
+{-| Render inline abstract with "Abstract." prefix.
+
+    [ abstract text here ]
+
+-}
+renderAbstract : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderAbstract params acc args meta =
+    Html.span (Render.Utility.rlSync meta)
+        (Html.span [ HA.style "font-size" "18px" ] [ Html.text "Abstract. " ]
+            :: renderList params acc args
+        )
+
+
+{-| Render an anchor (underlined text).
+
+    [ anchor some text ]
+
+-}
+renderAnchor : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderAnchor params acc args meta =
+    Html.span
+        (Render.Utility.rlSync meta
+            ++ [ HA.style "text-decoration" "underline" ]
+        )
+        (renderList params acc args)
+
+
+{-| Render a footnote reference.
+
+    [footnote This is the footnote text.]
+
+Displays as superscript number linking to endnotes.
+Clicking scrolls to endnote; ESC returns to footnote.
+
+-}
+renderFootnote : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderFootnote _ acc args meta =
+    case args of
+        [ Text _ textMeta ] ->
+            case Dict.get textMeta.id acc.footnoteNumbers of
+                Just k ->
+                    Html.a
+                        [ HA.id meta.id
+                        , HA.href ("#" ++ textMeta.id ++ "_")
+                        , HE.preventDefaultOn "click" (Decode.succeed ( FootnoteClick { targetId = textMeta.id ++ "_", returnId = meta.id }, True ))
+                        , HA.style "font-weight" "bold"
+                        , HA.style "color" "#0000b3"
+                        , HA.style "text-decoration" "none"
+                        , HA.style "cursor" "pointer"
+                        ]
+                        [ Html.sup [] [ Html.text (String.fromInt k) ] ]
+
+                Nothing ->
+                    Html.span [ HA.id meta.id ] []
+
+        _ ->
+            Html.span [ HA.id meta.id ] []
+
+
+{-| Render marked/labeled content.
+
+    [ marked label content ]
+
+First arg is used as the element ID.
+
+-}
+renderMarked : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderMarked params acc args meta =
+    case args of
+        [ first ] ->
+            Html.span [ HA.id meta.id ] (renderList params acc [ first ])
+
+        (Text str _) :: rest ->
+            Html.span [ HA.id str ] (renderList params acc rest)
+
+        _ ->
+            Html.span [ HA.id meta.id ] []
+
+
+
+-- TABLE RENDERING
+
+
+{-| Render an inline table.
+
+    [ table [ tableRow [ tableItem A ] [ tableItem B ] ] [ tableRow [ tableItem 1 ] [ tableItem 2 ] ] ]
+
+-}
+renderTable : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderTable params acc rows meta =
+    Html.table
+        [ HA.id meta.id
+        , HA.style "border-collapse" "collapse"
+        , HA.style "margin" "8px 0"
+        ]
+        [ Html.tbody [] (List.map (renderTableRowExpr params acc) rows) ]
+
+
+{-| Render a table row expression (internal helper).
+-}
+renderTableRowExpr : CompilerParameters -> Accumulator -> Expression -> Html Msg
+renderTableRowExpr params acc expr =
+    case expr of
+        Fun "tableRow" items rowMeta ->
+            Html.tr [ HA.id rowMeta.id ]
+                (List.map (renderTableItemExpr params acc) items)
+
+        _ ->
+            Html.tr [] []
+
+
+{-| Render a table item expression (internal helper).
+-}
+renderTableItemExpr : CompilerParameters -> Accumulator -> Expression -> Html Msg
+renderTableItemExpr params acc expr =
+    case expr of
+        Fun "tableItem" exprList itemMeta ->
+            Html.td
+                [ HA.id itemMeta.id
+                , HA.style "padding" "4px 8px"
+                , HA.style "border" "1px solid #ddd"
+                ]
+                (renderList params acc exprList)
+
+        _ ->
+            Html.td [] []
+
+
+{-| Render a table row.
+
+    [ tableRow [ tableItem A ] [ tableItem B ] ]
+
+-}
+renderTableRow : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderTableRow params acc items meta =
+    Html.tr [ HA.id meta.id ]
+        (List.map (renderTableItemExpr params acc) items)
+
+
+{-| Render a table cell.
+
+    [ tableItem cell content ]
+
+-}
+renderTableItem : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderTableItem params acc exprList meta =
+    Html.td
+        [ HA.id meta.id
+        , HA.style "padding" "4px 8px"
+        , HA.style "border" "1px solid #ddd"
+        ]
+        (renderList params acc exprList)
+
+
+
+-- IMAGES
+
+
+{-| Render an inline image (fits within text line).
+
+    [ inlineimage https :// example.com / icon.png ]
+
+Max height is 1.5em to fit inline.
+
+-}
+renderInlineImage : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderInlineImage params _ args meta =
+    case args of
+        [ Text src _ ] ->
+            Html.img
+                [ HA.id meta.id
+                , HA.src src
+                , HA.style "display" "inline"
+                , HA.style "vertical-align" "middle"
+                , HA.style "max-height" "1.5em"
+                ]
+                []
+
+        _ ->
+            Html.span [ HA.id meta.id ] [ Html.text "[inlineimage: invalid args]" ]
+
+
+
+-- BIBLIOGRAPHY
+
+
+{-| Render an inline bibliography reference.
+
+    [ bibitem einstein1905 ]
+
+-}
+renderBibitem : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderBibitem _ _ args meta =
+    let
+        content =
+            args
+                |> List.filterMap getTextContent
+                |> String.join " "
+    in
+    Html.span (Render.Utility.rlSync meta) [ Html.text ("[" ++ content ++ "]") ]
+
+
+
+-- SPECIALIZED LINKS
+
+
+{-| Render a user-defined link (internal navigation).
+
+    [ ulink Section 1 sec1 ]
+
+Last word is the target ID.
+
+-}
+renderUlink : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderUlink _ _ args meta =
+    let
+        argString =
+            args |> List.filterMap getTextContent |> String.join " "
+
+        words =
+            String.words argString
+
+        n =
+            List.length words
+
+        label =
+            List.take (n - 1) words |> String.join " "
+
+        target =
+            List.drop (n - 1) words |> String.concat
+    in
+    Html.a
+        [ HA.id meta.id
+        , HA.href ("#" ++ target)
+        , HA.style "color" "#0066cc"
+        , HA.style "cursor" "pointer"
+        ]
+        [ Html.text label ]
+
+
+{-| Render a reference link with lookup.
+
+    [ reflink Theorem theorem1 ]
+
+Last word is the reference key.
+
+-}
+renderReflink : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderReflink _ acc args meta =
+    let
+        argString =
+            args |> List.filterMap getTextContent |> String.join " "
+
+        words =
+            String.words argString
+
+        n =
+            List.length words
+
+        key =
+            List.drop (n - 1) words |> String.concat
+
+        label =
+            List.take (n - 1) words |> String.join " "
+
+        targetId =
+            Dict.get key acc.reference
+                |> Maybe.map .id
+                |> Maybe.withDefault ""
+    in
+    Html.a
+        [ HA.id meta.id
+        , HA.href ("#" ++ targetId)
+        , HE.onClick (SelectId targetId)
+        , HA.style "color" "#0066cc"
+        , HA.style "font-weight" "600"
+        ]
+        [ Html.text label ]
+
+
+{-| Render a cross-site link.
+
+    [ cslink External Page page123 ]
+
+-}
+renderCslink : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderCslink _ _ args meta =
+    let
+        argString =
+            args |> List.filterMap getTextContent |> String.join " "
+
+        words =
+            String.words argString
+
+        n =
+            List.length words
+
+        label =
+            List.take (n - 1) words |> String.join " "
+    in
+    Html.a
+        [ HA.id meta.id
+        , HA.style "color" "#0066cc"
+        , HA.style "cursor" "pointer"
+        ]
+        [ Html.text label ]
+
+
+
+-- SPECIAL/INTERACTIVE (simplified versions)
+
+
+{-| Render Scheme code (monospace).
+
+    [scheme (+ 1 2)]
+
+-}
+renderScheme : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderScheme _ _ args meta =
+    let
+        content =
+            args |> List.filterMap getTextContent |> String.join " "
+    in
+    Html.code
+        (Render.Utility.rlSync meta
+            ++ [ HA.style "background-color" "#f5f5f5"
+               , HA.style "padding" "2px 4px"
+               , HA.style "font-family" "monospace"
+               ]
+        )
+        [ Html.text content ]
+
+
+renderProgress : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderProgress _ _ args meta =
+    let
+        argValues =
+            args
+                |> List.filterMap getTextContent
+                |> String.join " "
+                |> String.words
+                |> List.filterMap String.toInt
+
+        percentageString : Int -> Int -> String
+        percentageString num denom =
+            let
+                ratio =
+                    toFloat num / toFloat denom
+
+                percentage_ x =
+                    toFloat (round (1000.0 * x)) / 10
+            in
+            String.fromFloat (percentage_ ratio)
+    in
+    case argValues of
+        [ numerator, denominator ] ->
+            let
+                data =
+                    [ String.fromInt numerator
+                    , String.fromInt denominator
+                    , percentageString numerator denominator ++ "%"
+                    ]
+            in
+            Html.text (String.join " " data)
+
+        _ ->
+            Html.text "invalid args"
+
+
+{-| Render a compute placeholder (displays as "[compute: ...]").
+
+    [ compute expression ]
+
+-}
+renderCompute : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderCompute _ _ args meta =
+    let
+        content =
+            args |> List.filterMap getTextContent |> String.join " "
+    in
+    Html.span
+        (Render.Utility.rlSync meta
+            ++ [ HA.style "font-family" "monospace"
+               , HA.style "color" "#666"
+               ]
+        )
+        [ Html.text ("[compute: " ++ content ++ "]") ]
+
+
+{-| Render a data placeholder (displays as "[data: ...]").
+
+    [ data key ]
+
+-}
+renderData : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderData _ _ args meta =
+    let
+        content =
+            args |> List.filterMap getTextContent |> String.join " "
+    in
+    Html.span
+        (Render.Utility.rlSync meta
+            ++ [ HA.style "font-family" "monospace"
+               , HA.style "color" "#666"
+               ]
+        )
+        [ Html.text ("[data: " ++ content ++ "]") ]
+
+
+{-| Render a button.
+
+    [ button Click Me, action ]
+
+First part before comma is the label.
+
+-}
+renderButton : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderButton _ _ args meta =
+    let
+        content =
+            args |> List.filterMap getTextContent |> String.join " "
+
+        labelText =
+            content
+                |> String.split ","
+                |> List.head
+                |> Maybe.withDefault "Button"
+                |> String.trim
+    in
+    Html.button
+        [ HA.id meta.id
+        , HA.style "padding" "4px 8px"
+        , HA.style "font-size" "14px"
+        , HA.style "cursor" "pointer"
+        ]
+        [ Html.text labelText ]
+
+
+{-| Render a horizontal rule.
+
+    [ hrule ]
+
+-}
+renderHrule : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderHrule params _ _ meta =
+    Html.hr
+        [ HA.id meta.id
+        , HA.style "width" (String.fromInt params.width ++ "px")
+        , HA.style "border" "none"
+        , HA.style "border-top" "1px solid #bfbfbf"
+        , HA.style "margin" "8px 0"
+        ]
+        []
+
+
+{-| Render a mark with anchor.
+
+    [ mark id [ anchor text ] ]
+
+Sets element ID for linking.
+
+-}
+renderMark : CompilerParameters -> Accumulator -> List Expression -> ExprMeta -> Html Msg
+renderMark params acc args meta =
+    let
+        withValue =
+            getWithValue args
+
+        markId =
+            Maybe.withDefault meta.id withValue
+
+        strippedArgs =
+            stripWithProperty args
+
+        markClass =
+            if withValue /= Nothing then
+                [ HA.class "scripta-mark" ]
+
+            else
+                []
+    in
+    Html.span ([ HA.id markId ] ++ markClass) (renderList params acc strippedArgs)
+
+
+{-| Extract the value from a trailing " with:..." in the last Text node.
+-}
+getWithValue : List Expression -> Maybe String
+getWithValue args =
+    case List.reverse args of
+        (Text str _) :: _ ->
+            case String.indexes " with:" str of
+                [] ->
+                    Nothing
+
+                indices ->
+                    let
+                        lastIndex =
+                            List.foldl max 0 indices
+                    in
+                    Just (String.dropLeft (lastIndex + 6) str |> String.trim)
+
+        _ ->
+            Nothing
+
+
+{-| Strip trailing " with:..." from the last Text node in an expression list.
+-}
+stripWithProperty : List Expression -> List Expression
+stripWithProperty args =
+    case List.reverse args of
+        (Text str m) :: rest ->
+            List.reverse (Text (stripWithSuffix str) m :: rest)
+
+        _ ->
+            args
+
+
+stripWithSuffix : String -> String
+stripWithSuffix str =
+    case String.indexes " with:" str of
+        [] ->
+            str
+
+        indices ->
+            let
+                lastIndex =
+                    List.foldl max 0 indices
+            in
+            String.left lastIndex str

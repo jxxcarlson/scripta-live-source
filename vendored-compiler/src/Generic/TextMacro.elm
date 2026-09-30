@@ -1,93 +1,44 @@
 module Generic.TextMacro exposing
-    ( Macro
-    , applyMacro
-    , applyMacroS
-    , applyMacroS2
-    , buildDictionary
+    ( buildDictionary
     , expand
     , exportTexMacros
     , extract
     , getTextMacroFunctionNames
-    , listSubst
-    , macroFromL0String
-    , macroFromString
-    , parseMicroLaTeX
-    , printMacro
     , toString
     )
 
 import Dict exposing (Dict)
 import Generic.ASTTools as AT
-import Generic.Language exposing (Expr(..), Expression)
-import Generic.Print
-import Generic.TextMacroParser
 import List.Extra
-import Scripta.Expression
+import V3.Types exposing (Expr(..), Expression, Macro)
 
 
-type alias Macro =
-    { name : String, vars : List String, body : List Expression }
+extract : Expression -> Maybe Macro
+extract expr_ =
+    case expr_ of
+        Fun "macro" ((Text argString _) :: exprs) _ ->
+            case String.words (String.trim argString) of
+                name :: rest ->
+                    Just { name = name, vars = rest, body = exprs }
 
-
-macroFromString : String -> Maybe Macro
-macroFromString str =
-    case String.left 1 str of
-        "\\" ->
-            macroFromMicroLaTeXString str
-
-        "[" ->
-            macroFromL0String str
+                _ ->
+                    Nothing
 
         _ ->
             Nothing
 
 
-{-|
-
-    Construct a Lambda from a string
-
--}
-macroFromL0String : String -> Maybe Macro
-macroFromL0String str =
-    str
-        |> Scripta.Expression.parse 0
-        |> List.head
-        |> Maybe.andThen extract
-
-
-macroFromMicroLaTeXString : String -> Maybe Macro
-macroFromMicroLaTeXString macroS =
-    Maybe.andThen extract2 (parseMicroLaTeX macroS |> List.head)
-
-
-printMacro : Macro -> String
-printMacro macro =
-    "Macro "
-        ++ macro.name
-        ++ ", vars: ["
-        ++ String.join ", " macro.vars
-        ++ "], expr:  "
-        ++ Generic.Print.toStringFromList macro.body
-
-
-printLaTeXMacro : Macro -> String
-printLaTeXMacro macro =
-    if List.length macro.vars == 0 then
-        "\\newcommand{\\"
-            ++ macro.name
-            ++ "}{"
-            ++ (List.map toLaTeXString macro.body |> String.join "")
-            ++ "}"
-
-    else
-        "\\newcommand{\\"
-            ++ macro.name
-            ++ "}"
-            ++ "["
-            ++ String.fromInt (List.length macro.vars)
-            ++ "]{"
-            ++ (List.map toLaTeXString macro.body |> String.join "")
-            ++ "}"
+toString : (Expression -> String) -> Macro -> String
+toString exprToString macro =
+    [ "\\newcommand{\\"
+    , macro.name
+    , "}["
+    , String.fromInt (List.length macro.vars)
+    , "]{"
+    , macro.body |> List.map exprToString |> String.join ""
+    , "}    "
+    ]
+        |> String.join ""
 
 
 toLaTeXString : Expression -> String
@@ -131,96 +82,31 @@ toLaTeXString expr =
             "[ExprList]"
 
 
-extract2 : Expression -> Maybe Macro
-extract2 expr =
-    case expr of
-        Fun name body meta ->
-            if name == "newcommand" then
-                extract2Aux body meta
+printLaTeXMacro : Macro -> String
+printLaTeXMacro macro =
+    if List.length macro.vars == 0 then
+        "\\newcommand{\\"
+            ++ macro.name
+            ++ "}{"
+            ++ (List.map toLaTeXString macro.body |> String.join "")
+            ++ "}"
 
-            else
-                Nothing
-
-        _ ->
-            Nothing
-
-
-getVars : List Expression -> List String
-getVars exprs =
-    List.map getVars_ exprs |> List.concat |> List.Extra.unique |> List.sort
-
-
-getVars_ : Expression -> List String
-getVars_ expr =
-    case expr of
-        Text str _ ->
-            getParam str
-
-        Fun _ exprs _ ->
-            List.map getVars_ exprs |> List.concat
-
-        _ ->
-            []
-
-
-getParam : String -> List String
-getParam str =
-    case Generic.TextMacroParser.getParam str of
-        Just result ->
-            [ result ]
-
-        Nothing ->
-            []
-
-
-extract2Aux body meta =
-    case body of
-        (Fun name _ _) :: rest ->
-            Just (extract3Aux name rest meta)
-
-        _ ->
-            Nothing
-
-
-
--- extract3Aux : String -> List String -> meta -> Lambda
-
-
-extract3Aux : String -> List Expression -> c -> { name : String, vars : List String, body : List Expression }
-extract3Aux name rest meta =
-    { name = name, vars = getVars rest, body = rest }
-
-
-extract : Expression -> Maybe Macro
-extract expr_ =
-    case expr_ of
-        Fun "macro" ((Text argString _) :: exprs) _ ->
-            case String.words (String.trim argString) of
-                name :: rest ->
-                    Just { name = name, vars = rest, body = exprs }
-
-                _ ->
-                    Nothing
-
-        _ ->
-            Nothing
-
-
-{-| Insert a lambda in the dictionary
--}
-insert : Maybe Macro -> Dict String Macro -> Dict String Macro
-insert data dict =
-    case data of
-        Nothing ->
-            dict
-
-        Just macro ->
-            Dict.insert macro.name macro dict
+    else
+        "\\newcommand{\\"
+            ++ macro.name
+            ++ "}"
+            ++ "["
+            ++ String.fromInt (List.length macro.vars)
+            ++ "]{"
+            ++ (List.map toLaTeXString macro.body |> String.join "")
+            ++ "}"
 
 
 buildDictionary : List String -> Dict String Macro
-buildDictionary lines =
-    List.foldl (\line acc -> insert (macroFromString line) acc) Dict.empty lines
+buildDictionary _ =
+    -- NOTE: Full macro parsing requires Scripta.Expression which is not in V3.
+    -- Text macros defined in documents will not be expanded in PDF export.
+    Dict.empty
 
 
 getTextMacroFunctionNames : String -> List String
@@ -269,8 +155,6 @@ exportTexMacros str =
         |> String.join "\n"
 
 
-{-| Expand the given expression using the given dictionary of lambdas.
--}
 expand : Dict String Macro -> Expression -> Expression
 expand dict expr =
     case expr of
@@ -286,14 +170,38 @@ expand dict expr =
             expr
 
 
-{-| Substitute a for all occurrences of (Text var ..) in e
--}
+expandWithMacro : Macro -> Expression -> Expression
+expandWithMacro macro expr =
+    case expr of
+        Fun name fArgs _ ->
+            if name == macro.name then
+                listSubst (fArgs |> filterOutBlanks) macro.vars macro.body |> group
+
+            else
+                expr
+
+        _ ->
+            expr
+
+
+listSubst : List Expression -> List String -> List Expression -> List Expression
+listSubst as_ vars exprs =
+    if List.length as_ /= List.length vars then
+        exprs
+
+    else
+        let
+            funcs =
+                List.map2 makeF as_ vars
+        in
+        List.foldl (\func acc -> func acc) exprs funcs
+
+
 subst : Expression -> String -> Expression -> Expression
 subst a var body =
     case body of
         Text str _ ->
             if String.trim str == String.trim var then
-                -- the trimming is a temporary hack.  Need to adjust the parser
                 a
 
             else if String.contains var str then
@@ -313,35 +221,6 @@ subst a var body =
             body
 
 
-listSubst : List Expression -> List String -> List Expression -> List Expression
-listSubst as_ vars exprs =
-    if List.length as_ /= List.length vars then
-        exprs
-
-    else
-        let
-            funcs =
-                List.map2 makeF as_ vars
-        in
-        List.foldl (\func acc -> func acc) exprs funcs
-
-
-expandWithMacro : Macro -> Expression -> Expression
-expandWithMacro macro expr =
-    case expr of
-        Fun name fArgs _ ->
-            if name == macro.name then
-                listSubst (fArgs |> filterOutBlanks) macro.vars macro.body |> group
-
-            else
-                expr
-
-        _ ->
-            expr
-
-
-{-| Apply a lambda to an expression.
--}
 group : List Expression -> Expression
 group exprs =
     Fun "group" exprs dummy
@@ -352,63 +231,11 @@ makeF a var =
     List.map (subst a var)
 
 
-toString : (Expression -> String) -> Macro -> String
-toString exprToString macro =
-    [ "\\newcommand{\\"
-    , macro.name
-    , "}["
-    , String.fromInt (List.length macro.vars)
-    , "]{"
-    , macro.body |> List.map exprToString |> String.join "" --|> mapArgs lambda.vars
-    , "}    "
-    ]
-        |> String.join ""
-
-
-
--- FOR TESTING --
-
-
-parseExpr : String -> Maybe Expression
-parseExpr str =
-    Scripta.Expression.parse 0 str |> List.head
-
-
-parseMacro : String -> Maybe Macro
-parseMacro str =
-    str |> parseExpr |> Maybe.andThen extract
-
-
-applyMacro : Maybe Macro -> Maybe Expression -> Maybe Expression
-applyMacro macro_ expr_ =
-    Maybe.map2 expandWithMacro macro_ expr_
-
-
-applyMacroS : String -> String -> Maybe String
-applyMacroS macroS exprS =
-    applyMacro (parseMacro macroS) (parseExpr exprS) |> Maybe.map Generic.Print.toString
-
-
-applyMacroS2 : String -> String -> Maybe String
-applyMacroS2 macroS exprS =
-    applyMacro (Maybe.andThen extract2 (parseMicroLaTeX macroS |> List.head))
-        (parseMicroLaTeX exprS |> List.head)
-        |> Maybe.map Generic.Print.toString
-
-
-parseMicroLaTeX : String -> List Expression
-parseMicroLaTeX str =
-    Scripta.Expression.parse 0 str
-
-
-
--- HELPERS
-
-
 filterOutBlanks : List Expression -> List Expression
 filterOutBlanks =
     AT.filterExprs (\e -> not (AT.isBlank e))
 
 
+dummy : V3.Types.ExprMeta
 dummy =
     { begin = 0, end = 0, index = 0, id = "dummyId" }

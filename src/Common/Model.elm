@@ -1,6 +1,7 @@
 module Common.Model exposing
     ( CommonModel
     , CommonMsg(..)
+    , DisplaySettings
     , Flags
     , PdfError
     , PdfResponse
@@ -9,24 +10,20 @@ module Common.Model exposing
     , getTitle
     , getTitleFromContent
     , initCommon
+    , loadSource
+    , makeOptions
+    , refreshOptions
+    , updateSource
     )
 
 import Browser.Dom
-import Dict
 import Document exposing (Document)
-import Element
 import Http
 import Json.Decode as Decode
 import Keyboard
 import List.Extra
 import Ports
-import ScriptaV2.Compiler
-import ScriptaV2.DifferentialCompiler
-import ScriptaV2.Language
-import ScriptaV2.Msg exposing (MarkupMsg)
-import ScriptaV2.Settings
-import ScriptaV2.Types
-import Sync
+import Scripta
 import Theme
 import Time
 
@@ -60,21 +57,24 @@ type alias PdfResponse =
     }
 
 
+type alias DisplaySettings =
+    { windowWidth : Int }
+
+
 type alias CommonModel =
-    { displaySettings : ScriptaV2.Settings.DisplaySettings
-    , params : ScriptaV2.Types.CompilerParameters
+    { displaySettings : DisplaySettings
+    , options : Scripta.Options
+    , document : Scripta.Document
+    , compilerOutput : Scripta.Output Scripta.Event
     , sourceText : String
     , count : Int
     , windowWidth : Int
     , windowHeight : Int
-    , currentLanguage : ScriptaV2.Language.Language
     , selectId : String
     , title : String
     , theme : Theme.Theme
     , pressedKeys : List Keyboard.Key
     , currentTime : Time.Posix
-    , compilerOutput : ScriptaV2.Compiler.CompilerOutput
-    , editRecord : ScriptaV2.DifferentialCompiler.EditRecord
     , documents : List Document
     , currentDocument : Maybe Document
     , showDocumentList : Bool
@@ -90,17 +90,9 @@ type alias CommonModel =
     , showPdfErrors : Bool
 
     -- EDITOR
-    , editorData : { begin : Int, end : Int }
-    , doSync : Bool
-    , maybeSelectionOffset : Maybe Sync.SelectionOffsets
     , lastLoadedDocumentId : Maybe String
     , initialText : String
     , loadDocumentIntoEditor : Bool
-    , targetData : Maybe Document.EditorTargetData
-    , selectedId : String
-    , foundIds : List String
-    , foundIdIndex : Int
-    , searchCount : Int
     , lastSavedDocumentId : Maybe String
     }
 
@@ -109,7 +101,7 @@ type CommonMsg
     = NoOp
     | InputText String
     | InputText2 { position : Int, source : String }
-    | Render MarkupMsg
+    | CompilerEvent Scripta.Event
     | GotNewWindowDimensions Int Int
     | KeyMsg Keyboard.Msg
     | ToggleTheme
@@ -140,16 +132,6 @@ type CommonMsg
     | ResetLoadFlag
     | PortMsgReceived (Result Decode.Error Ports.IncomingMsg)
     | LoadLastSavedDocumentId (Maybe String)
-      -- Editor
-    | SelectedText String
-    | GetSelection String
-    | ReceiveAnchorOffset (Maybe Sync.SelectionOffsets)
-    | RequestAnchorOffset
-    | StartSync
-    | SyncContent String String
-    | MakeSearchForId String
-    | MarkSelection (Maybe ( Int, Int ))
-    | SelectId String
     | UpdateFileName String
     | UpdateFileDescription String
     | Export String
@@ -159,7 +141,6 @@ type CommonMsg
     | ToggleEditMode
     | MarkCurrentDocumentDirty
     | SetCurrentDocument Document
-    | ApplyEditorData ( Int, Int )
     | GotViewPort (Result Browser.Dom.Error Browser.Dom.Viewport)
     | FocusOnEditorLine Int
     | TogglePdfErrors
@@ -185,52 +166,42 @@ initCommon flags =
 
         currentTime =
             Time.millisToPosix flags.currentTime
-    in
-    { displaySettings =
-        { windowWidth =
-            max 310
-                (max 350
-                    ((flags.window.windowWidth - 230
-                        - (if flags.window.windowWidth >= 1000 then
-                            221
 
-                           else
-                            0
-                          )
-                        - 3
-                     )
-                        // 2
+        displaySettings =
+            { windowWidth =
+                max 310
+                    (max 350
+                        ((flags.window.windowWidth - 230
+                            - (if flags.window.windowWidth >= 1000 then
+                                221
+
+                               else
+                                0
+                              )
+                            - 3
+                         )
+                            // 2
+                        )
+                        - 40
                     )
-                    - 40
-                )
-          -- Reduced padding experiment
-        , longEquationLimit = 100.0
-        , counter = 0
-        , selectedId = "-"
-        , selectedSlug = Nothing
-        , scale = 1.0
-        , data = Dict.empty
-        , idsOfOpenNodes = []
-        , numberToLevel = 3
-        }
-    , params = ScriptaV2.Types.defaultCompilerParameters
+            }
+
+        options =
+            makeOptions theme displaySettings
+    in
+    { displaySettings = displaySettings
+    , options = options
+    , document = Scripta.parse options ""
+    , compilerOutput = Scripta.render options (Scripta.parse options "")
     , sourceText = ""
     , count = 0
     , windowWidth = flags.window.windowWidth
     , windowHeight = flags.window.windowHeight
-    , currentLanguage = ScriptaV2.Language.ScriptaLang
     , selectId = ""
     , title = ""
     , theme = theme
     , pressedKeys = []
     , currentTime = currentTime
-    , compilerOutput =
-        { body = []
-        , banner = Nothing
-        , toc = []
-        , title = Element.text ""
-        }
-    , editRecord = ScriptaV2.DifferentialCompiler.init Nothing Dict.empty ScriptaV2.Language.ScriptaLang ""
     , documents = []
     , currentDocument = Nothing
     , showDocumentList = False
@@ -246,18 +217,68 @@ initCommon flags =
     , showPdfErrors = False
 
     -- EDITOR
-    , editorData = { begin = 0, end = 0 }
-    , doSync = False
-    , maybeSelectionOffset = Nothing
     , lastLoadedDocumentId = Nothing
     , initialText = ""
     , loadDocumentIntoEditor = False
-    , targetData = Nothing
-    , selectedId = ""
-    , foundIds = []
-    , foundIdIndex = 0
-    , searchCount = 0
     , lastSavedDocumentId = Nothing
+    }
+
+
+{-| Compiler options for the rendered-text panel. Document and title blocks
+are hidden because the app shows the title in its own header.
+-}
+makeOptions : Theme.Theme -> DisplaySettings -> Scripta.Options
+makeOptions theme displaySettings =
+    Scripta.defaultOptions
+        |> Scripta.withTheme (Theme.mapTheme theme)
+        |> Scripta.withWindowWidth displaySettings.windowWidth
+        |> Scripta.withContentWidth displaySettings.windowWidth
+        |> Scripta.withTOC True
+        |> Scripta.withFilter Scripta.SuppressDocumentBlocks
+
+
+{-| Parse a new source from scratch (initial load, document switch).
+-}
+loadSource : String -> CommonModel -> CommonModel
+loadSource source model =
+    let
+        document =
+            Scripta.parse model.options source
+    in
+    { model
+        | sourceText = source
+        , document = document
+        , compilerOutput = Scripta.render model.options document
+    }
+
+
+{-| Incrementally re-parse after an edit to the current source.
+-}
+updateSource : String -> CommonModel -> CommonModel
+updateSource source model =
+    let
+        document =
+            Scripta.reparse model.options model.document source
+    in
+    { model
+        | sourceText = source
+        , document = document
+        , compilerOutput = Scripta.render model.options document
+    }
+
+
+{-| Rebuild the options from the theme and display settings (after a theme
+toggle or window resize) and re-render.
+-}
+refreshOptions : CommonModel -> CommonModel
+refreshOptions model =
+    let
+        options =
+            makeOptions model.theme model.displaySettings
+    in
+    { model
+        | options = options
+        , compilerOutput = Scripta.render options model.document
     }
 
 

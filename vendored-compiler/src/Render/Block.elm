@@ -1,99 +1,64 @@
-module Render.Block exposing (renderAttributes, renderBody, standardAttributes)
+module Render.Block exposing (renderBody)
+
+{-| Render blocks by dispatching on Heading type.
+-}
 
 import Either exposing (Either(..))
-import Element exposing (Element)
-import Element.Background
-import Generic.Acc exposing (Accumulator)
-import Generic.Language exposing (Expr(..), Expression, ExpressionBlock, Heading(..))
+import Html exposing (Html)
+import Html.Attributes as HA
 import Render.Expression
-import Render.Helper
 import Render.OrdinaryBlock
-import Render.Settings exposing (RenderSettings)
-import Render.Sync
-import Render.Utility
-import Render.VerbatimBlock as VerbatimBlock
-import ScriptaV2.Msg exposing (MarkupMsg(..))
+import Render.Sizing
+import Render.Utility exposing (blockIdAndStyle, idAttr)
+import Render.VerbatimBlock
+import V3.Types exposing (Accumulator, CompilerParameters, ExpressionBlock, Heading(..), Msg(..))
 
 
-focusedAttribute : Element.Attribute msg
-focusedAttribute =
-    Element.focused []
-
-
-renderAttributes : RenderSettings -> ExpressionBlock -> List (Element.Attribute MarkupMsg)
-renderAttributes settings block =
+{-| Render a block's body content, dispatching based on heading type.
+Children are the rendered subtree elements.
+-}
+renderBody : CompilerParameters -> Accumulator -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderBody params acc block children =
     case block.heading of
         Paragraph ->
-            focusedAttribute :: standardAttributes settings block
+            renderParagraph params acc block children
 
         Ordinary name ->
-            standardAttributes settings block
-                ++ focusedAttribute
-                :: Render.OrdinaryBlock.getAttributes settings.theme
-                    name
+            Render.OrdinaryBlock.render params acc name block children
 
-        Verbatim _ ->
-            focusedAttribute :: standardAttributes settings block
+        Verbatim name ->
+            Render.VerbatimBlock.render params acc name block children
 
 
-standardAttributes settings block =
-    [ Render.Utility.idAttributeFromInt block.meta.lineNumber
-    , Render.Sync.rightToLeftSyncHelper block.meta.lineNumber block.meta.numberOfLines
-    ]
-        ++ Render.Sync.highlightIfIdIsSelected block.meta.lineNumber block.meta.numberOfLines settings
-
-
-renderBody : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> ExpressionBlock -> List (Element MarkupMsg)
-renderBody count acc settings attrs block =
-    case block.heading of
-        Paragraph ->
-            Element.column [] [ renderParagraphBody count acc settings attrs block ]
-                |> List.singleton
-
-        Ordinary _ ->
-            [ Render.OrdinaryBlock.render count acc settings attrs block ]
-
-        Verbatim _ ->
-            [ VerbatimBlock.render count acc settings attrs block |> Render.Helper.showError block.meta.error ]
-
-
-renderParagraphBody : Int -> Accumulator -> RenderSettings -> List (Element.Attribute MarkupMsg) -> ExpressionBlock -> Element MarkupMsg
-renderParagraphBody count acc settings attrs block =
+{-| Render a paragraph block.
+-}
+renderParagraph : CompilerParameters -> Accumulator -> ExpressionBlock -> List (Html Msg) -> List (Html Msg)
+renderParagraph params acc block children =
     case block.body of
-        Right exprs ->
-            Element.paragraph
-                (Render.Helper.htmlId block.meta.id
-                    :: Element.width (Element.px settings.width)
-                    :: attrs
+        Left errorMsg ->
+            -- Error case - display error message
+            Html.div
+                (blockIdAndStyle block
+                    ++ [ HA.style "color" "red"
+                       , HA.style "margin-bottom" (Render.Sizing.paragraphSpacingPx params.sizing)
+                       ]
                 )
-                (List.map (Render.Expression.render count acc settings attrs) exprs)
+                [ Html.text ("Error: " ++ errorMsg) ]
+                :: children
 
-        Left _ ->
-            Element.none
+        Right expressions ->
+            if List.isEmpty expressions then
+                -- Empty paragraph, just return children
+                children
 
-
-
----- SUBSIDIARY RENDERERS
-
-
-clickableParagraph : Int -> Int -> Element.Attribute MarkupMsg -> List (Element MarkupMsg) -> Element MarkupMsg
-clickableParagraph lineNumber numberOfLines color elements =
-    let
-        id =
-            String.fromInt lineNumber
-    in
-    Element.paragraph
-        [ color
-        , Render.Sync.rightToLeftSyncHelper lineNumber numberOfLines
-        , Render.Helper.htmlId id
-        ]
-        elements
-
-
-indentParagraph : number -> Element msg -> Element msg
-indentParagraph indent x =
-    if indent > 0 then
-        Element.el [ Element.paddingEach { top = Render.Helper.topPaddingForIndentedElements, bottom = 0, left = 0, right = 0 } ] x
-
-    else
-        x
+            else
+                Html.p
+                    (blockIdAndStyle block
+                        ++ [ HA.style "margin-bottom" (Render.Sizing.paragraphSpacingPx params.sizing)
+                           , HA.style "margin-left" (Render.Sizing.marginLeftPx params.sizing)
+                           , HA.style "margin-right" (Render.Sizing.marginRightPx params.sizing)
+                           , HA.style "line-height" (Render.Sizing.lineHeight params.sizing)
+                           ]
+                    )
+                    (Render.Expression.renderList params acc expressions)
+                    :: children

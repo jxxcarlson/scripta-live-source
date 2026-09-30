@@ -5,11 +5,7 @@ import Config
 import Http
 import Json.Decode as D
 import Json.Encode as E
-import Render.Export.LaTeX
-import Render.Settings
-import ScriptaV2.Compiler
-import ScriptaV2.Helper
-import ScriptaV2.Language
+import ScriptaExport
 import Time
 
 
@@ -17,7 +13,6 @@ type alias ExportData =
     { title : String
     , content : String
     , sourceText : String
-    , language : ScriptaV2.Language.Language
     }
 
 
@@ -50,11 +45,8 @@ pdfResponseDecoder =
 requestPDF : ExportData -> Cmd CommonMsg
 requestPDF exportData =
     let
-        syntaxTree =
-            ScriptaV2.Compiler.parseFromString exportData.language exportData.sourceText
-
         imageUrls =
-            ScriptaV2.Helper.getImageUrls syntaxTree
+            ScriptaExport.imageUrls exportData.sourceText
 
         imageRecords =
             urlsToImageRecords imageUrls

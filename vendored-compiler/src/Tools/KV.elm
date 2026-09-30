@@ -1,29 +1,12 @@
-module Tools.KV exposing (argsAndProperties, cleanArgs, makeDict, prepareKVData, prepareList)
+module Tools.KV exposing (argsAndPropertiesFromList, mergeArgsAndProperties)
 
 import Dict exposing (Dict)
 import List.Extra
 import Tools.Loop exposing (Step(..), loop)
 
 
-{-|
-
-    > stuff = "source:http://localhost:80/data/hubble.csv\nfoo:bar\nyuuk"
-    > makeDict stuff
-    Dict.fromList [("foo","bar"),("source","http://localhost:80/data/hubble.csv"),("yuuk","")]
-
--}
-makeDict : String -> Dict String String
-makeDict str =
-    str
-        |> String.lines
-        |> List.map String.trim
-        |> List.filter (\s -> s /= "")
-        |> preparePairs
-        |> Dict.fromList
-
-
-argsAndProperties : List String -> ( List String, Dict String String )
-argsAndProperties words =
+argsAndPropertiesFromList : List String -> ( List String, Dict String String )
+argsAndPropertiesFromList words =
     let
         args =
             cleanArgs words
@@ -35,6 +18,17 @@ argsAndProperties words =
             namedArgs |> prepareList |> prepareKVData
     in
     ( args, properties )
+
+
+{-| Merge two (args, properties) pairs. Args are concatenated, properties are merged
+with the second pair's values taking precedence for duplicate keys.
+-}
+mergeArgsAndProperties :
+    ( List String, Dict String String )
+    -> ( List String, Dict String String )
+    -> ( List String, Dict String String )
+mergeArgsAndProperties ( args1, props1 ) ( args2, props2 ) =
+    ( args1 ++ args2, Dict.union props2 props1 )
 
 
 prepareKVData : List String -> Dict String String
@@ -125,38 +119,20 @@ type KVStatus
 
 prepareList : List String -> List String
 prepareList strs =
-    strs |> explode |> List.map fix |> List.concat |> List.filter (\s -> s /= "")
-
-
-preparePairs : List String -> List ( String, String )
-preparePairs strs =
-    strs |> explode |> List.map makePair |> List.filter (\( k, _ ) -> k /= "")
+    strs |> explode |> List.concatMap fix |> List.filter (\s -> s /= "")
 
 
 fix : List String -> List String
 fix strs =
     case strs of
         a :: b :: _ ->
-            (a ++ ":") :: b :: []
+            [ a ++ ":", b ]
 
         a :: [] ->
-            a :: []
+            [ a ]
 
         [] ->
             []
-
-
-makePair : List String -> ( String, String )
-makePair strs =
-    case strs of
-        a :: b :: rest ->
-            ( a, String.join ":" (b :: rest) )
-
-        a :: [] ->
-            ( a, "" )
-
-        [] ->
-            ( "", "" )
 
 
 explode : List String -> List (List String)

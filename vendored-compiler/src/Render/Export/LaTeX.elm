@@ -16,8 +16,6 @@ import ETeX.Transform
 import Either exposing (Either(..))
 import Generic.ASTTools as ASTTools
 import Generic.BlockUtilities
-import Generic.Forest exposing (Forest)
-import Generic.Language exposing (Expr(..), Expression, ExpressionBlock, Heading(..))
 import Generic.TextMacro
 import List.Extra
 import MiniLaTeX.Util
@@ -29,11 +27,11 @@ import Render.Settings exposing (RenderSettings)
 import Render.Types
 import Render.Utility as Utility
 import RoseTree.Tree as Tree exposing (Tree(..))
-import Time
 import Tools.Loop exposing (Step(..), loop)
+import V3.Types exposing (Expr(..), Expression, ExpressionBlock, Heading(..))
 
 
-counterValue : Forest ExpressionBlock -> Maybe Int
+counterValue : List (Tree ExpressionBlock) -> Maybe Int
 counterValue ast =
     ast
         |> ASTTools.getBlockArgsByName "setcounter"
@@ -170,10 +168,12 @@ export publicationData settings_ ast =
         ++ tableofcontents properties rawBlockNames
         ++ "\n\n"
         ++ rawExport settings ast
+        ++ "\n\n\\clearpage\n\n"
+        ++ "\\printindex\n\n"
         ++ "\n\n\\end{document}\n"
 
 
-frontMatter : Render.Types.PublicationData -> Forest ExpressionBlock -> String
+frontMatter : Render.Types.PublicationData -> List (Tree ExpressionBlock) -> String
 frontMatter publicationData ast =
     let
         dict =
@@ -204,8 +204,16 @@ frontMatter publicationData ast =
 
                 Right str ->
                     "\\date{" ++ str ++ "}"
+
+        setupIndex =
+            """\\makeindex[
+                          title=Index,
+                          columns=2,
+                          %% intoc     % include index in the table of contents
+                        ]"""
     in
-    "\\begin{document}"
+    setupIndex
+        :: "\\begin{document}"
         :: title
         :: date
         :: authors
@@ -214,8 +222,8 @@ frontMatter publicationData ast =
         |> String.join "\n\n"
 
 
-today : Time.Posix -> String
-today currenTime =
+today : String
+today =
     "currentTime: not implemented"
 
 
@@ -324,7 +332,7 @@ exportTree mathMacroDict settings tree =
             Tree.value tree
 
         result =
-            case Generic.Language.getHeadingFromBlock block of
+            case block.heading of
                 Ordinary "itemList" ->
                     let
                         exprList : List Expression
@@ -499,7 +507,7 @@ rawExport settings ast_ =
         processedTrees =
             ast
                 |> ASTTools.filterForestOnLabelNames (\name -> not (name == Just "runninghead"))
-                |> Generic.Forest.map Generic.BlockUtilities.condenseUrls
+                |> List.map (Tree.mapValues Generic.BlockUtilities.condenseUrls)
                 |> encloseLists
 
         exportedStrings =
@@ -524,10 +532,11 @@ type Status
     = InsideItemizedList
     | InsideNumberedList
     | InsideDescriptionList
+    | InsideBibliography
     | OutsideList
 
 
-encloseLists : Forest ExpressionBlock -> Forest ExpressionBlock
+encloseLists : List (Tree ExpressionBlock) -> List (Tree ExpressionBlock)
 encloseLists blocks =
     -- First, recursively process children of each tree
     let
@@ -559,10 +568,10 @@ processTreeChildren (Tree block children) =
 
 
 type alias State =
-    { status : Status, input : Forest ExpressionBlock, output : Forest ExpressionBlock, itemNumber : Int }
+    { status : Status, input : List (Tree ExpressionBlock), output : List (Tree ExpressionBlock), itemNumber : Int }
 
 
-nextStep : State -> Step State (Forest ExpressionBlock)
+nextStep : State -> Step State (List (Tree ExpressionBlock))
 nextStep state =
     case List.head state.input of
         Nothing ->
@@ -577,6 +586,9 @@ nextStep state =
                 InsideDescriptionList ->
                     Done (Tree.leaf endDescriptionBlock :: state.output)
 
+                InsideBibliography ->
+                    Done (Tree.leaf endBibliographyBlock :: state.output)
+
                 OutsideList ->
                     Done state.output
 
@@ -584,8 +596,30 @@ nextStep state =
             Loop (nextState tree state)
 
 
+emptyExpressionBlock : ExpressionBlock
 emptyExpressionBlock =
-    Generic.Language.expressionBlockEmpty
+    { heading = Paragraph
+    , indent = 0
+    , args = []
+    , properties = Dict.empty
+    , firstLine = ""
+    , body = Right []
+    , meta =
+        { id = ""
+        , position = 0
+        , lineNumber = 0
+        , bodyLineNumber = 0
+        , numberOfLines = 0
+        , begin = 0
+        , end = 0
+        , contentBegin = 0
+        , contentEnd = 0
+        , messages = []
+        , sourceText = ""
+        , error = Nothing
+        }
+    , style = {}
+    }
 
 
 beginItemizedBlock : ExpressionBlock
@@ -684,6 +718,26 @@ endDescriptionBlock =
             )
 
 
+beginBibliographyBlock : List String -> ExpressionBlock
+beginBibliographyBlock args =
+    let
+        maxWidth =
+            List.head args |> Maybe.withDefault "9"
+    in
+    { emptyExpressionBlock
+        | heading = Ordinary "beginBibliographyBlock"
+        , args = args
+        , body = Right [ Text maxWidth { begin = 0, end = 1, index = 0, id = "begin" } ]
+    }
+
+
+endBibliographyBlock : ExpressionBlock
+endBibliographyBlock =
+    { emptyExpressionBlock
+        | heading = Ordinary "endBibliographyBlock"
+    }
+
+
 nextState : Tree ExpressionBlock -> State -> State
 nextState tree state =
     let
@@ -720,6 +774,20 @@ nextState tree state =
 
         ( InsideDescriptionList, _ ) ->
             { state | status = OutsideList, itemNumber = 0, output = tree :: Tree.leaf endDescriptionBlock :: state.output, input = List.drop 1 state.input }
+
+        -- BIBLIOGRAPHY
+        ( OutsideList, Just "bibliography" ) ->
+            let
+                args =
+                    (Tree.value tree).args
+            in
+            { state | status = InsideBibliography, output = Tree.leaf (beginBibliographyBlock args) :: state.output, input = List.drop 1 state.input }
+
+        ( InsideBibliography, Just "bibitem" ) ->
+            { state | output = tree :: state.output, input = List.drop 1 state.input }
+
+        ( InsideBibliography, _ ) ->
+            { state | status = OutsideList, output = tree :: Tree.leaf endBibliographyBlock :: state.output, input = List.drop 1 state.input }
 
         --- OUTSIDE
         ( OutsideList, _ ) ->
@@ -795,6 +863,14 @@ exportBlock mathMacroDict settings block =
                         _ ->
                             "error in constructing table"
 
+        Ordinary "box" ->
+            case block.body of
+                Left _ ->
+                    ""
+
+                Right exprs_ ->
+                    exportBox block.properties block.args (exportExprList mathMacroDict settings exprs_)
+
         Ordinary name ->
             case block.body of
                 Left _ ->
@@ -814,6 +890,10 @@ exportBlock mathMacroDict settings block =
                     case name of
                         "math" ->
                             let
+                                maybeLabel : Maybe String
+                                maybeLabel =
+                                    Dict.get "label" block.properties |> Maybe.map (\l -> "\\label{" ++ String.trim l ++ "}")
+
                                 fix_ : String -> String
                                 fix_ str_ =
                                     str_
@@ -822,9 +902,20 @@ exportBlock mathMacroDict settings block =
                                         |> String.join "\n"
                                         |> ETeX.Transform.transformETeX mathMacroDict
                                         |> MiniLaTeX.Util.transformLabel
+
+                                isAlignedBlock =
+                                    String.contains "&" str
                             in
-                            -- TODO: This should be fixed upstream
-                            [ "$$", fix_ str, "$$" ] |> String.join "\n"
+                            if isAlignedBlock then
+                                processAlignedBlock block str mathMacroDict
+
+                            else
+                                case maybeLabel of
+                                    Nothing ->
+                                        [ "\\begin{equation}", fix_ str, "\\end{equation}" ] |> String.join "\n"
+
+                                    Just label ->
+                                        [ "\\begin{equation}", label, fix_ str, "\\end{equation}" ] |> String.join "\n"
 
                         "csvtable" ->
                             let
@@ -931,6 +1022,9 @@ exportBlock mathMacroDict settings block =
                         "verse" ->
                             str |> fixChars |> (\s -> "\\begin{verbatim}\n" ++ s ++ "\n\\end{verbatim}")
 
+                        "chem" ->
+                            "\\[\\ce{" ++ str ++ "}\\]"
+
                         "load-files" ->
                             ""
 
@@ -971,7 +1065,7 @@ exportBlock mathMacroDict settings block =
                                         |> List.drop 1
                                         -- now normalize the data
                                         |> List.filter (\line -> not <| String.contains "\\[\\begin{tikzcd}" line)
-                                        |> List.filter (\line -> not <| String.contains "\\end{tikzcd}\\]" line)
+                                        |> List.filter (\line -> not <| String.contains "\\end{tikzcd}" line)
                                         |> (\x -> line1b :: "\\[\\begin{tikzcd}" :: x ++ [ "\\end{tikzcd}\\]" ])
                                         |> String.join "\n"
                             in
@@ -1098,12 +1192,23 @@ mapChars2 : String -> String
 mapChars2 str =
     str
         |> String.replace "_" "\\_"
+        |> String.replace "“" "``"
+        |> String.replace "”" "''"
+        |> String.replace "‘" "`"
+        |> String.replace "’" "'"
+        |> String.replace "–" "--"
+        |> String.replace "—" "---"
 
 
 
 -- BEGIN DICTIONARIES
 
 
+{-|
+
+    Translate Scripta names to LaTeX names.
+
+-}
 functionDict : Dict String String
 functionDict =
     Dict.fromList
@@ -1113,6 +1218,7 @@ functionDict =
         , ( "b", "textbf" )
         , ( "image", "imagecenter" )
         , ( "contents", "tableofcontents" )
+        , ( "term", "index" )
         ]
 
 
@@ -1125,9 +1231,12 @@ macroDict =
     Dict.fromList
         [ ( "link", \_ -> link )
         , ( "ilink", \_ -> ilink )
+        , ( "wikilink", \_ -> wikilink )
         , ( "mark", \_ -> markwith )
         , ( "par", \_ -> par )
         , ( "eqref", \_ -> eqref )
+        , ( "mathref", \_ -> eqref )
+        , ( "index", \_ -> index )
         , ( "index_", \_ _ -> blindIndex )
         , ( "image", Render.Export.Image.export )
         , ( "vspace", \_ -> vspace )
@@ -1137,13 +1246,105 @@ macroDict =
         , ( "rb", \_ -> rb )
         , ( "bt", \_ -> bt )
         , ( "underscore", \_ -> underscore )
+        , ( "qed", \_ _ -> "\\hfill$\\square$" )
         , ( "tags", dontRender )
+        , ( "setcounter", dontRender )
+        , ( "abstract", \_ -> abstractInline )
+        , ( "bibitem", \_ exprs -> "[" ++ (Render.Export.Util.getArgs exprs |> String.join " ") ++ "]" )
+        , ( "cite", \_ -> exportCite )
+        , ( "box", \_ _ -> "$\\square$" )
+        , ( "cbox", \_ _ -> "$\\boxtimes$" )
+        , ( "rbox", \_ _ -> "\\textcolor{red}{$\\square$}" )
+        , ( "crbox", \_ _ -> "\\textcolor{red}{$\\boxtimes$}" )
+        , ( "fbox", \_ _ -> "$\\blacksquare$" )
+        , ( "frbox", \_ _ -> "\\textcolor{red}{$\\blacksquare$}" )
+        , ( "xbox", \_ _ -> "$\\boxtimes$" )
+        , ( "errorHighlight", \_ -> errorHighlight )
         ]
 
 
 dontRender : RenderSettings -> List Expression -> String
 dontRender _ _ =
     ""
+
+
+{-| Inline `[abstract ...]`. The bare `\abstract` token is the article class's
+abstract environment, so emit a plain labelled run of text instead.
+-}
+abstractInline : List Expression -> String
+abstractInline exprs =
+    "\\textbf{Abstract.} " ++ (Render.Export.Util.getArgs exprs |> String.join " ")
+
+
+errorHighlight : List Expression -> String
+errorHighlight exprs =
+    let
+        content =
+            List.map exprToString exprs |> String.join ""
+
+        exprToString expr =
+            case expr of
+                Text str _ ->
+                    str
+
+                VFun _ body _ ->
+                    body
+
+                _ ->
+                    "?"
+    in
+    "\\textcolor{red}{[" ++ content ++ "]}"
+
+
+exportCite : List Expression -> String
+exportCite exprs =
+    case exprs of
+        [ Text key _ ] ->
+            "\\cite{" ++ String.trim key ++ "}"
+
+        _ ->
+            ""
+
+
+exportBox : Dict String String -> List String -> String -> String
+exportBox properties args body =
+    let
+        title =
+            case Dict.get "title" properties of
+                Just t ->
+                    t
+
+                Nothing ->
+                    String.join " " args
+
+        options =
+            [ "colback=blue!5!white", "boxrule=0.25pt", "left=1cm", "right=1cm" ]
+                ++ (if title == "" then
+                        []
+
+                    else
+                        [ "title={" ++ title ++ "}", "coltitle=black", "colbacktitle=blue!10!white" ]
+                   )
+    in
+    "\\begin{tcolorbox}[" ++ String.join ", " options ++ "]\n" ++ body ++ "\n\\end{tcolorbox}"
+
+
+exportBibliographyBegin : List String -> String
+exportBibliographyBegin args =
+    let
+        maxWidth =
+            List.head args |> Maybe.withDefault "9"
+    in
+    "\\section{References}\n\\renewcommand{\\refname}{}\\vspace{-1.5em}\n\\begin{thebibliography}{" ++ maxWidth ++ "}"
+
+
+exportBibitem : List String -> String -> String
+exportBibitem args body =
+    let
+        key =
+            List.head args |> Maybe.withDefault ""
+    in
+    "\\bibitem{" ++ key ++ "}\n" ++ body
 
 
 
@@ -1165,7 +1366,8 @@ blockDict mathMacroDict =
         , ( "banner", \_ _ _ -> "" )
         , ( "set-key", \_ _ _ -> "" )
         , ( "endnotes", \_ _ _ -> "" )
-        , ( "index", \_ _ _ -> "Index: not implemented" )
+        , ( "index", \_ _ _ -> "" )
+        , ( "references", \_ _ _ -> "" )
 
         --
         , ( "chapter", \settings_ args body -> chapter settings_ args body )
@@ -1183,8 +1385,36 @@ blockDict mathMacroDict =
         , ( "endNumberedBlock", \_ _ _ -> "\\end{enumerate}" )
         , ( "beginDescriptionBlock", \_ _ _ -> "\\begin{description}" )
         , ( "endDescriptionBlock", \_ _ _ -> "\\end{description}" )
-        , ( "mathmacros", \_ _ body -> body ++ "\nHa ha ha!" )
+        , ( "mathmacros", \_ _ body -> body |> ETeX.Transform.toLaTeXNewCommands )
         , ( "setcounter", \_ _ _ -> "" )
+        , ( "bibliography", \_ _ _ -> "" )
+        , ( "bibitem", \_ args body -> exportBibitem args body )
+        , ( "beginBibliographyBlock", \_ args _ -> exportBibliographyBegin args )
+        , ( "endBibliographyBlock", \_ _ _ -> "\\end{thebibliography}" )
+
+        -- Configuration blocks: no visible output
+        , ( "collection", \_ _ _ -> "" )
+        , ( "document", \_ _ _ -> "" )
+        , ( "type", \_ _ _ -> "" )
+        , ( "runninghead_", \_ _ _ -> "" )
+        , ( "shiftandsetcounter", \_ _ _ -> "" )
+        , ( "visibleBanner", \_ _ _ -> "" )
+
+        -- Blocks with no dedicated LaTeX environment
+        , ( "sh", \settings_ args body -> subheading settings_ args body )
+        , ( "compact", \_ _ body -> body )
+        , ( "identity", \_ _ body -> body )
+        , ( "datatable", \_ _ body -> body )
+        , ( "red", \_ _ body -> "\\textcolor{red}{" ++ body ++ "}" )
+        , ( "red2", \_ _ body -> "\\textcolor{red!70!black}{" ++ body ++ "}" )
+        , ( "blue", \_ _ body -> "\\textcolor{blue}{" ++ body ++ "}" )
+        , ( "q", \_ _ body -> "\\textbf{Question.} " ++ body )
+        , ( "a", \_ _ body -> "\\textbf{Answer.} " ++ body )
+        , ( "reveal", \_ _ body -> body )
+        , ( "more", \_ _ body -> body )
+        , ( "env", \_ args body -> "\\textbf{" ++ String.join " " args ++ "}\\quad " ++ body )
+        , ( "indent", \_ _ body -> "\\begin{adjustwidth}{0.75cm}{}\n" ++ body ++ "\n\\end{adjustwidth}" )
+        , ( "section*", \_ _ body -> "\\section*{" ++ body ++ "}" )
         ]
 
 
@@ -1192,6 +1422,8 @@ verbatimExprDict =
     Dict.fromList
         [ ( "code", inlineCode )
         , ( "math", inlineMath )
+        , ( "m", inlineMath )
+        , ( "chem", inlineChem )
         ]
 
 
@@ -1216,13 +1448,20 @@ inlineMath str =
     "$" ++ str ++ "$"
 
 
+inlineChem : String -> String
+inlineChem str =
+    "$\\ce{" ++ str ++ "}$"
+
+
 inlineCode : String -> String
 inlineCode str_ =
     let
         str =
             String.replace "\\" "\\\\" str_
     in
-    "\\texttt{" ++ str ++ "}"
+    --"\\texttt{" ++ str ++ "}"
+    -- "\\verb|" ++ str ++ "|"
+    "\\lstinline|" ++ str ++ "|"
 
 
 link : List Expression -> String
@@ -1260,7 +1499,7 @@ eqref exprs =
 
 par : List Expression -> String
 par _ =
-    [ "\\par\\par" ] |> String.join ""
+    "\n\n"
 
 
 markwith : List Expression -> String
@@ -1272,6 +1511,15 @@ markwith exprs =
     [ "\\markwith{", arg, "}" ] |> String.join ""
 
 
+index : List Expression -> String
+index exprs =
+    let
+        args =
+            Render.Export.Util.getArgs exprs |> String.join " "
+    in
+    [ "\\index{", args, "}", "\\textit{", args, "}" ] |> String.join ""
+
+
 ilink : List Expression -> String
 ilink exprs =
     let
@@ -1280,6 +1528,38 @@ ilink exprs =
             Render.Export.Util.getTwoArgs exprs
     in
     [ "\\href{", "https://scripta.io/s/", args.second, "}{", args.first, "}" ] |> String.join ""
+
+
+wikilink : List Expression -> String
+wikilink exprs =
+    ilink (wikilinkMoveFirstTextToEnd exprs)
+
+
+wikilinkMoveFirstTextToEnd : List Expression -> List Expression
+wikilinkMoveFirstTextToEnd exprs =
+    case exprs of
+        [ Text first firstMeta ] ->
+            [ Text first firstMeta, Text first firstMeta ]
+
+        (Text first firstMeta) :: rest ->
+            wikilinkDropLeadingWhitespace rest ++ [ Text first firstMeta ]
+
+        _ ->
+            exprs
+
+
+wikilinkDropLeadingWhitespace : List Expression -> List Expression
+wikilinkDropLeadingWhitespace exprs =
+    case exprs of
+        (Text s m) :: rest ->
+            if String.trim s == "" then
+                wikilinkDropLeadingWhitespace rest
+
+            else
+                Text s m :: rest
+
+        _ ->
+            exprs
 
 
 bolditalic : List Expression -> String
@@ -1308,7 +1588,8 @@ rb _ =
 
 bt : List Expression -> String
 bt _ =
-    "`"
+    --"\\backtick{}"
+    "\\`{}"
 
 
 underscore : List Expression -> String
@@ -1328,12 +1609,12 @@ setcounter args =
 
 subheading : RenderSettings -> List String -> String -> String
 subheading settings args body =
-    "\\vspace{8pt{\\Large{" ++ body ++ "}"
+    "\\vspace{8pt}{\\Large " ++ body ++ "}"
 
 
 smallsubheading : RenderSettings -> List String -> String -> String
 smallsubheading settings args body =
-    "\\vspace{4pt{\\large{" ++ body ++ "}"
+    "\\vspace{4pt}{\\large " ++ body ++ "}"
 
 
 descriptionItem : List String -> String -> String
@@ -1519,8 +1800,26 @@ exportExpr : ETeX.MathMacros.MathMacroDict -> RenderSettings -> Expression -> St
 exportExpr mathMacroDict settings expr =
     case expr of
         Fun name exps_ _ ->
-            -- Handle verbatim-like functions: [math x^2] should export like $x^2$
-            if List.member name [ "chem", "math", "m", "code" ] then
+            if List.member name [ "scheme", "compute", "data", "button", "newPost", "tableRow", "tableItem" ] then
+                "[" ++ name ++ "]:unknown"
+
+            else if name == "table" then
+                exportInlineTable mathMacroDict settings exps_
+
+            else if name == "sup" then
+                renderSup name exps_
+
+            else if name == "sub" then
+                renderSub name exps_
+
+            else if name == "bi" then
+                renderBi name exps_
+
+            else if name == "ds" then
+                renderDs
+                -- Handle verbatim-like functions: [math x^2] should export like $x^2$
+
+            else if List.member name [ "chem", "math", "m", "code" ] then
                 let
                     arg =
                         case exps_ of
@@ -1554,6 +1853,9 @@ exportExpr mathMacroDict settings expr =
                     Nothing ->
                         "Error extracting lambda"
 
+            else if name == "dollar" || name == "ds" then
+                "\\$"
+
             else
                 case Dict.get name macroDict of
                     Just f ->
@@ -1585,6 +1887,112 @@ exportExpr mathMacroDict settings expr =
             exportExprList mathMacroDict settings itemExprs
 
 
+
+{- HELPERS FOR exportExpr -}
+
+
+{-| Export an inline `[table [tableRow [tableItem ...]]]` expression to a
+LaTeX `tabular`.
+-}
+exportInlineTable : ETeX.MathMacros.MathMacroDict -> RenderSettings -> List Expression -> String
+exportInlineTable mathMacroDict settings rowExprs =
+    let
+        isItem : Expression -> Bool
+        isItem expr =
+            case expr of
+                Fun "tableItem" _ _ ->
+                    True
+
+                _ ->
+                    False
+
+        cellsOf : Expression -> List Expression
+        cellsOf expr =
+            case expr of
+                Fun "tableRow" cells _ ->
+                    List.filter isItem cells
+
+                _ ->
+                    []
+
+        exportCell : Expression -> String
+        exportCell expr =
+            case expr of
+                Fun "tableItem" cellExprs _ ->
+                    exportExprList mathMacroDict settings cellExprs
+
+                _ ->
+                    ""
+
+        rows : List (List Expression)
+        rows =
+            rowExprs
+                |> List.filterMap
+                    (\e ->
+                        case e of
+                            Fun "tableRow" _ _ ->
+                                Just (cellsOf e)
+
+                            _ ->
+                                Nothing
+                    )
+
+        columnCount : Int
+        columnCount =
+            rows |> List.map List.length |> List.maximum |> Maybe.withDefault 1
+
+        renderedRows : String
+        renderedRows =
+            rows
+                |> List.map (\cells -> cells |> List.map exportCell |> String.join " & ")
+                |> String.join " \\\\\n"
+    in
+    "\\begin{tabular}{" ++ String.repeat columnCount "l" ++ "}\n" ++ renderedRows ++ "\n\\end{tabular}"
+
+
+renderSup name exps_ =
+    let
+        arg =
+            case exps_ of
+                [ Text str _ ] ->
+                    str
+
+                _ ->
+                    "Invalid argument to " ++ name
+    in
+    "${}^{\\text{" ++ arg ++ "}}$"
+
+
+renderSub name exps_ =
+    let
+        arg =
+            case exps_ of
+                [ Text str _ ] ->
+                    str
+
+                _ ->
+                    "Invalid argument to " ++ name
+    in
+    "${}_{\\text{" ++ arg ++ "}}$"
+
+
+renderBi name exps_ =
+    let
+        arg =
+            case exps_ of
+                [ Text str _ ] ->
+                    "\\textbf{\\textit{" ++ str ++ "}}"
+
+                _ ->
+                    "Invalid argument to " ++ name
+    in
+    "\\text{" ++ arg ++ "}"
+
+
+renderDs =
+    "\\$"
+
+
 {-| Use this to unalias names
 -}
 unalias : String -> String
@@ -1605,6 +2013,16 @@ aliases =
         , ( "b", "textbf" )
         , ( "bold", "textbf" )
         , ( "large", "large" )
+        , ( "red", "textcolor{red}" )
+        , ( "blue", "textcolor{blue}" )
+        , ( "green", "textcolor{green}" )
+        , ( "pink", "textcolor{pink}" )
+        , ( "magenta", "textcolor{magenta}" )
+        , ( "violet", "textcolor{violet}" )
+        , ( "gray", "textcolor{gray}" )
+        , ( "comment", "textcolor{blue}" )
+        , ( "strike", "sout" )
+        , ( "ssh", "smallsubheading" )
         ]
 
 

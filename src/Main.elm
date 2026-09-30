@@ -38,6 +38,7 @@ import Style
 import Task
 import Theme
 import Time
+import MainWidget
 import Widget
 
 
@@ -865,9 +866,9 @@ sidebar model =
           Element.column
             Style.innerColumn
             [ -- User name section
-              Widget.nameElement model
+              MainWidget.nameElement model
             , Element.el [ Element.paddingXY 0 8, Element.width Element.fill ] (Element.text "")
-            , Widget.toggleTheme model
+            , MainWidget.toggleTheme model
             , crudButtons model
             , exportStuff model
             , importStuff model

@@ -1,7 +1,6 @@
 module ETeX.Dictionary exposing (functionDict, symbolDict)
 
 import Dict exposing (Dict)
-import Generic.MathMacro exposing (MacroBody, MathExpr)
 
 
 

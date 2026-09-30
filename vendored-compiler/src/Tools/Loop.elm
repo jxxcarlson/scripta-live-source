@@ -1,5 +1,8 @@
 module Tools.Loop exposing (Step(..), loop)
 
+{-| A simple loop construct for state machines.
+-}
+
 
 type Step state a
     = Loop state

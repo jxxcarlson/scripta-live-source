@@ -2,8 +2,8 @@ module Theme exposing (..)
 
 import Color
 import Element
-import Render.NewColor exposing (..)
-import Render.Theme
+import NewColor exposing (..)
+import Scripta
 
 
 type Theme
@@ -11,14 +11,14 @@ type Theme
     | Dark
 
 
-mapTheme : Theme -> Render.Theme.Theme
+mapTheme : Theme -> Scripta.Theme
 mapTheme theme =
     case theme of
         Light ->
-            Render.Theme.Light
+            Scripta.Light
 
         Dark ->
-            Render.Theme.Dark
+            Scripta.Dark
 
 
 

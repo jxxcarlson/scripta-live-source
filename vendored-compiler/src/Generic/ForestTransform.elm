@@ -1,7 +1,4 @@
-module Generic.ForestTransform exposing
-    ( forestFromBlocks
-    , mapChildren
-    )
+module Generic.ForestTransform exposing (forestFromBlocks)
 
 {-| This module provides tools for building
 a tree from a string or a list of blocks. As noted

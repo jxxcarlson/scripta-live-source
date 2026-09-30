@@ -1,7 +1,7 @@
 module Render.Export.Util exposing (getArgs, getOneArg, getTwoArgs)
 
 import Generic.ASTTools as ASTTools
-import Generic.Language exposing (Expression)
+import V3.Types exposing (Expression)
 
 
 getArgs : List Expression -> List String

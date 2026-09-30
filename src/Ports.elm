@@ -9,6 +9,8 @@ port module Ports exposing
     , sqliteResult
     , tauriCommand
     , tauriResult
+    , selectInEditor
+    , scrollToElement
     )
 
 import Json.Encode as Encode
@@ -65,6 +67,10 @@ port sqliteResult : (Encode.Value -> msg) -> Sub msg
 -- Tauri-specific ports
 port tauriCommand : Encode.Value -> Cmd msg
 port tauriResult : (Encode.Value -> msg) -> Sub msg
+
+-- Editor / rendered-text sync (JS side: assets/editor-sync.js)
+port selectInEditor : { lineNumber : Int, begin : Int, end : Int, numberOfLines : Int } -> Cmd msg
+port scrollToElement : String -> Cmd msg
 
 
 -- PUBLIC API

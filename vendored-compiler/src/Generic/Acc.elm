@@ -1,64 +1,121 @@
 module Generic.Acc exposing
-    ( Accumulator
-    , InListState(..)
-    , InitialAccumulatorData
-    , TermLoc
-    , getMacroArg
+    ( InitialAccumulatorData
     , initialData
     , transformAccumulate
     )
 
-{-|
+{-| The Accumulator module collects information from the AST during a
+traversal pass, then uses that information to transform blocks.
 
-    The function the Generic.Acc module is to collect information from the AST that will
-    be used when it is rendered. This information is built up in an Accumulator, a
-    data structure used for
+**What the Accumulator tracks:**
 
-            - numbering sections, theorems, figures, etc.
-            - creating
-               - a dictionary of references
-               - a dictionary of terms
-               - a dictionary of footnotes
-               - a dictionary of math macros
-               - a dictionary of text macros
-               - a dictionary of key-value pairs
-               - a dictionary of questions and answers
+  - Section/heading numbering (headingIndex vector)
+  - Block numbering for theorems, equations, figures (blockCounter, counter dict)
+  - Cross-reference dictionary (reference)
+  - Term/index entries (terms)
+  - Footnotes (footnotes, footnoteNumbers)
+  - Math and text macro definitions (mathMacroDict, textMacroDict)
+  - Bibliography entries (bibliography)
+  - Q&A pairings (qAndAList, qAndADict)
 
+**Main entry point:**
 
-     The main function is transformAccumulate, which has the signature
+    transformAccumulate : InitialAccumulatorData -> Forest ExpressionBlock -> ( Accumulator, Forest ExpressionBlock )
 
-           InitialAccumulatorData -> Forest ExpressionBlock -> ( Accumulator, Forest ExpressionBlock )
+This function does two things for each block:
 
-     Two helper functions are of special interest,
+1.  `updateAccumulator` - extracts info from the block (e.g., increments counters)
+2.  `transformBlock` - adds info back to the block (e.g., sets "label" property with number)
 
-          updateAccumulator : ExpressionBlock -> Accumulator -> Accumulator
+**Numbering mechanisms:**
 
-     and
+  - Sections: `headingIndex` vector, stored in block.properties["label"]
+  - Theorems/numbered blocks: `blockCounter` int, stored in block.properties["label"]
+  - Equations/figures: `counter` dict (keyed by "equation", "figure"), stored in block.properties
 
-          transformBlock : Accumulator -> ExpressionBlock -> ExpressionBlock
+**Functions (54 total):**
 
-      The first function is used to update the accumulator with information from the AST. The second
-      updates expression blocks with information already gathered in the accumulator.
+  - Core (tree traversal)
+      - initialData
+      - init
+      - transformAccumulate
+      - transformAccumulateTree
+      - transformAccumulateBlock
+      - mapAccumulate
+      - reverse
+  - Block transformation
+      - transformBlock
+      - expand
+      - vectorPrefix
+  - Counters
+      - getCounter
+      - getCounterAsString
+      - incrementCounter
+      - reduceName
+  - References
+      - makeReferenceDatum
+      - updateReference
+      - updateReferenceWithBlock
+      - getReferenceDatum
+  - Accumulator updates (by block type)
+      - updateAccumulator
+      - updateWithOrdinarySectionBlock
+      - updateWithOrdinaryDocumentBlock
+      - updateWithOrdinaryBlock
+      - updateWithVerbatimBlock
+      - updateWithParagraph
+      - verbatimBlockReference
+      - nextInListState
+  - Macros
+      - updateWithTextMacros
+      - updateWithMathMacros
+      - makeMathMacroDict
+      - macroParser
+  - Terms (index entries)
+      - addTermsFromContent
+      - getTerms
+      - extract
+      - extractTermFromArgs
+      - parseListAs
+      - addTerm
+      - getTextContent
+      - getTextEnd
+  - Citations/Bibliography
+      - addCitesFromContent
+      - getCiteKeys
+      - extractCiteKey
+  - Footnotes
+      - getFootnotes
+      - extractFootnote
+      - addFootnote
+      - addFootnoteLabel
+      - addFootnotes
+      - addFootnotesFromContent
+  - Block helpers
+      - getNameContentId
+      - getNameContentIdTag
+      - getNameFromHeading
+      - getVerbatimContent
+      - getMeta
+      - getTag
+      - normalizeLines
 
 -}
 
 import Dict exposing (Dict)
-import ETeX.MathMacros
 import ETeX.Transform
 import Either exposing (Either(..))
 import Generic.ASTTools
 import Generic.BlockUtilities
-import Generic.Language exposing (Expr(..), Expression, ExpressionBlock, Heading(..))
 import Generic.Settings
-import Generic.TextMacro exposing (Macro)
+import Generic.TextMacro
 import Generic.Vector as Vector exposing (Vector)
 import Maybe.Extra
 import Parser exposing ((|.), (|=), Parser)
 import RoseTree.Tree as Tree exposing (Tree)
-import ScriptaV2.Config as Config
-import ScriptaV2.Language exposing (Language)
 import Tools.String
 import Tools.Utility as Utility
+import V3.Types exposing (Accumulator, Expr(..), ExprMeta, Expression, ExpressionBlock, Heading(..), InListState(..), Macro, MathMacroDict, TermLoc, TermLoc2)
 
 
 initialData : InitialAccumulatorData
@@ -66,36 +123,10 @@ initialData =
     { mathMacros = ""
     , textMacros = ""
     , vectorSize = 4
-    , language = Config.defaultLanguage
     , shiftAndSetCounter = Nothing
+    , maxLevel = 0
+    , chapterCounter = 0
     }
-
-
-type alias Accumulator =
-    { headingIndex : Vector
-    , documentIndex : Vector
-    , counter : Dict String Int
-    , blockCounter : Int
-    , itemVector : Vector -- Used for section numbering
-    , deltaLevel : Int
-    , numberedItemDict : Dict String { level : Int, index : Int }
-    , numberedBlockNames : List String
-    , inListState : InListState
-    , reference : Dict String { id : String, numRef : String }
-    , terms : Dict String TermLoc
-    , footnotes : Dict String TermLoc2
-    , footnoteNumbers : Dict String Int
-    , mathMacroDict : ETeX.MathMacros.MathMacroDict
-    , textMacroDict : Dict String Macro
-    , keyValueDict : Dict String String
-    , qAndAList : List ( String, String )
-    , qAndADict : Dict String String
-    }
-
-
-type InListState
-    = SInList
-    | SNotInList
 
 
 init : InitialAccumulatorData -> Accumulator
@@ -106,7 +137,7 @@ init data =
                 Vector.init data.vectorSize
 
             Just n ->
-                { content = [ n + 1, 0, 0, 0 ], size = 4 }
+                Vector.init data.vectorSize |> Vector.set 0 (n + 1)
     , deltaLevel =
         case data.shiftAndSetCounter of
             Nothing ->
@@ -115,9 +146,10 @@ init data =
             Just _ ->
                 1
     , documentIndex = Vector.init data.vectorSize
-    , inListState = SNotInList
+    , inListState = NotInList
     , counter = Dict.empty
     , blockCounter = 0
+    , chapterCounter = data.chapterCounter
     , itemVector = Vector.init data.vectorSize
     , numberedItemDict = Dict.empty
     , numberedBlockNames = Generic.Settings.numberedBlockNames
@@ -130,12 +162,12 @@ init data =
     , keyValueDict = Dict.empty
     , qAndAList = []
     , qAndADict = Dict.empty
+    , bibliography = Dict.empty
+    , maxLevel = initialData.maxLevel
     }
         |> updateWithMathMacros data.mathMacros
 
 
-{-| Note that function transformAccumulate operates on initialized accumulator.
--}
 transformAccumulate : InitialAccumulatorData -> List (Tree ExpressionBlock) -> ( Accumulator, List (Tree ExpressionBlock) )
 transformAccumulate data forest =
     List.foldl (\tree ( acc_, ast_ ) -> transformAccumulateTree tree acc_ |> mapper ast_) ( init data, [] ) forest
@@ -157,12 +189,53 @@ incrementCounter name dict =
     Dict.insert name (getCounter name dict + 1) dict
 
 
+{-| Parse key-value pairs from a verbatim block body.
+Each line should be in the format "key: value".
+Used for book and article blocks.
+-}
+parseKeyValueBody : ExpressionBlock -> Dict String String
+parseKeyValueBody block =
+    case block.body of
+        Left content ->
+            content
+                |> String.lines
+                |> List.filterMap parseKeyValueLine
+                |> Dict.fromList
+
+        Right _ ->
+            Dict.empty
+
+
+{-| Parse a single "key: value" line.
+-}
+parseKeyValueLine : String -> Maybe ( String, String )
+parseKeyValueLine line =
+    case String.split ":" line of
+        key :: rest ->
+            let
+                trimmedKey =
+                    String.trim key
+
+                value =
+                    String.join ":" rest |> String.trim
+            in
+            if trimmedKey /= "" then
+                Just ( trimmedKey, value )
+
+            else
+                Nothing
+
+        _ ->
+            Nothing
+
+
 type alias InitialAccumulatorData =
     { mathMacros : String
     , textMacros : String
     , vectorSize : Int
-    , language : Language
     , shiftAndSetCounter : Maybe Int
+    , maxLevel : Int
+    , chapterCounter : Int
     }
 
 
@@ -198,7 +271,7 @@ mapAccumulate f s tree =
 
 reverse : List a -> List a
 reverse list =
-    List.foldl (\x xs -> x :: xs) [] list
+    List.reverse list
 
 
 {-|
@@ -230,10 +303,18 @@ transformBlock : Accumulator -> ExpressionBlock -> ExpressionBlock
 transformBlock acc block =
     case ( block.heading, block.args ) of
         ( Ordinary "section", _ ) ->
+            let
+                chapterPart =
+                    if acc.chapterCounter > 0 then
+                        String.fromInt acc.chapterCounter ++ "."
+
+                    else
+                        ""
+            in
             { block
                 | properties =
                     block.properties
-                        |> Dict.insert "label" (Vector.toString acc.headingIndex)
+                        |> Dict.insert "label" (chapterPart ++ Vector.toString acc.headingIndex)
                         |> Dict.insert "tag" (block.firstLine |> Tools.String.makeSlug)
             }
 
@@ -250,9 +331,9 @@ transformBlock acc block =
             { block
                 | properties =
                     block.properties
-                        |> Dict.insert "label" (Vector.toString acc.headingIndex)
+                        |> Dict.insert "label" (String.fromInt acc.chapterCounter)
                         |> Dict.insert "tag" tag
-                        |> Dict.insert "chapter-number" (getCounterAsString "chapter" acc.counter)
+                        |> Dict.insert "chapter-number" (String.fromInt acc.chapterCounter)
                         |> Dict.insert "level" "0"
             }
 
@@ -287,43 +368,108 @@ transformBlock acc block =
             in
             { block | properties = Dict.insert "label" label block.properties }
 
+        ( Verbatim "math", args ) ->
+            -- Treat math blocks identically to equation blocks
+            if Dict.member "label" block.properties then
+                let
+                    chapterPart =
+                        if acc.chapterCounter > 0 then
+                            String.fromInt acc.chapterCounter ++ "."
+
+                        else
+                            ""
+
+                    sectionPart =
+                        Vector.toStringWithLevel acc.maxLevel acc.headingIndex
+
+                    punctuation =
+                        if sectionPart /= "" then
+                            "."
+
+                        else
+                            ""
+
+                    equationProp =
+                        chapterPart ++ sectionPart ++ punctuation ++ getCounterAsString "equation" acc.counter
+                in
+                { block | properties = Dict.insert "equation-number" equationProp block.properties }
+
+            else
+                block
+
         ( Verbatim "equation", args ) ->
-            let
-                prefix =
-                    Vector.toString acc.headingIndex
+            -- Only number equations that have a label property
+            if Dict.member "label" block.properties then
+                let
+                    chapterPart =
+                        if acc.chapterCounter > 0 then
+                            String.fromInt acc.chapterCounter ++ "."
 
-                equationProp =
-                    if prefix == "" then
-                        getCounterAsString "equation" acc.counter
+                        else
+                            ""
 
-                    else
-                        Vector.toString acc.headingIndex ++ "." ++ getCounterAsString "equation" acc.counter
-            in
-            { block | properties = Dict.insert "equation-number" equationProp block.properties }
+                    sectionPart =
+                        Vector.toStringWithLevel acc.maxLevel acc.headingIndex
+
+                    punctuation =
+                        if sectionPart /= "" then
+                            "."
+
+                        else
+                            ""
+
+                    equationProp =
+                        chapterPart ++ sectionPart ++ punctuation ++ getCounterAsString "equation" acc.counter
+                in
+                { block | properties = Dict.insert "equation-number" equationProp block.properties }
+
+            else
+                block
 
         ( Verbatim "aligned", _ ) ->
-            let
-                prefix =
-                    Vector.toString acc.headingIndex
+            -- Only number aligned blocks that have a label property
+            if Dict.member "label" block.properties then
+                let
+                    chapterPart =
+                        if acc.chapterCounter > 0 then
+                            String.fromInt acc.chapterCounter ++ "."
 
-                equationProp =
-                    if prefix == "" then
-                        getCounterAsString "equation" acc.counter
+                        else
+                            ""
 
-                    else
-                        Vector.toString acc.headingIndex ++ "." ++ getCounterAsString "equation" acc.counter
-            in
-            { block | properties = Dict.insert "equation-number" equationProp block.properties }
+                    sectionPart =
+                        Vector.toStringWithLevel acc.maxLevel acc.headingIndex
+
+                    punctuation =
+                        if sectionPart /= "" then
+                            "."
+
+                        else
+                            ""
+
+                    equationProp =
+                        chapterPart ++ sectionPart ++ punctuation ++ getCounterAsString "equation" acc.counter
+                in
+                { block | properties = Dict.insert "equation-number" equationProp block.properties }
+
+            else
+                block
+
+        ( Verbatim "book", _ ) ->
+            { block | properties = Dict.union (parseKeyValueBody block) block.properties }
+
+        ( Verbatim "article", _ ) ->
+            { block | properties = Dict.union (parseKeyValueBody block) block.properties }
 
         ( heading, _ ) ->
             -- TODO: not at all sure that the below is correct
-            case Generic.Language.getNameFromHeading heading of
+            case getNameFromHeading heading of
                 Nothing ->
                     block
 
                 Just name ->
                     -- Insert the numerical counter, e.g,, equation number, in the arg list of the block
-                    if List.member name [ "section" ] then
+                    if name == "section" then
                         let
                             prefix =
                                 Vector.toString acc.headingIndex
@@ -341,12 +487,31 @@ transformBlock acc block =
 
                     else
                         -- Default insertion of "label" property (used for block numbering)
+                        let
+                            chapterPart =
+                                if acc.chapterCounter > 0 then
+                                    String.fromInt acc.chapterCounter ++ "."
+
+                                else
+                                    ""
+
+                            sectionPart =
+                                Vector.toStringWithLevel acc.maxLevel acc.headingIndex
+
+                            punctuation =
+                                if sectionPart /= "" then
+                                    "."
+
+                                else
+                                    ""
+
+                            label =
+                                chapterPart ++ sectionPart ++ punctuation ++ String.fromInt acc.blockCounter
+                        in
                         (if List.member name Generic.Settings.numberedBlockNames then
                             { block
                                 | properties =
-                                    Dict.insert "label"
-                                        (vectorPrefix acc.headingIndex ++ String.fromInt acc.blockCounter)
-                                        block.properties
+                                    Dict.insert "label" label block.properties
                             }
 
                          else
@@ -356,29 +521,47 @@ transformBlock acc block =
 
 
 vectorPrefix : Vector -> String
-vectorPrefix headingIndex =
+vectorPrefix vector =
     let
         prefix =
-            Vector.toString headingIndex
+            Vector.toString vector
     in
     if prefix == "" then
         ""
 
     else
-        Vector.toString headingIndex ++ "."
+        Vector.toString vector ++ "."
+
+
+vectorPrefixWithLevel : Int -> Vector -> String
+vectorPrefixWithLevel lev vector =
+    Vector.toStringWithLevel lev vector
+
+
+{-| Returns the chapter prefix string for numbering.
+If chapterCounter > 0, returns "N." where N is the chapter number.
+If chapterCounter = 0, returns "" (no chapter prefix).
+-}
+chapterPrefix : Accumulator -> String
+chapterPrefix acc =
+    if acc.chapterCounter > 0 then
+        String.fromInt acc.chapterCounter
+
+    else
+        ""
 
 
 {-| Map name to name of counter
 -}
 reduceName : String -> String
 reduceName str =
-    if List.member str [ "equation", "aligned" ] then
+    if List.member str [ "equation", "aligned", "math" ] then
         "equation"
 
     else if str == "code" then
         "listing"
 
-    else if List.member str [ "quiver", "image", "iframe", "chart", "table", "csvtable", "svg", "tikz", "iframe" ] then
+    else if List.member str [ "quiver", "image", "iframe", "chart", "textarray", "csvtable", "svg", "tikz", "iframe" ] then
         "figure"
 
     else
@@ -396,17 +579,17 @@ updated inList.
 nextInListState : Heading -> InListState -> InListState
 nextInListState heading state =
     case ( state, heading ) of
-        ( SNotInList, Ordinary "numbered" ) ->
-            SInList
+        ( NotInList, Ordinary "numbered" ) ->
+            InList
 
-        ( SNotInList, _ ) ->
-            SNotInList
+        ( NotInList, _ ) ->
+            NotInList
 
-        ( SInList, Ordinary "numbered" ) ->
-            SInList
+        ( InList, Ordinary "numbered" ) ->
+            InList
 
-        ( SInList, _ ) ->
-            SNotInList
+        ( InList, _ ) ->
+            NotInList
 
 
 type alias ReferenceDatum =
@@ -469,7 +652,7 @@ getNameContentId block =
     let
         name : Maybe String
         name =
-            Generic.Language.getNameFromHeading block.heading
+            getNameFromHeading block.heading
 
         content : Maybe (Either String (List Expression))
         content =
@@ -512,18 +695,33 @@ getNameContentIdTag block =
 
 getReferenceDatum : Accumulator -> ExpressionBlock -> Maybe ReferenceDatum
 getReferenceDatum acc block =
-    -- TODO: REVIEW!
     let
         id : String
         id =
             block.meta.id
 
         tag =
-            -- TODO: REVIEW!
-            Dict.get "tag" block.properties |> Maybe.withDefault "no-tag"
+            Dict.get "tag" block.properties |> Maybe.withDefault id
+
+        chapterPart =
+            if acc.chapterCounter > 0 then
+                String.fromInt acc.chapterCounter ++ "."
+
+            else
+                ""
+
+        sectionPart =
+            acc.headingIndex |> Vector.toStringWithLevel acc.maxLevel
+
+        punctuation =
+            if sectionPart /= "" then
+                "."
+
+            else
+                ""
 
         numRef =
-            (acc.headingIndex |> Vector.toString) ++ "." ++ (acc.blockCounter |> String.fromInt)
+            chapterPart ++ sectionPart ++ punctuation ++ (acc.blockCounter |> String.fromInt)
     in
     Just { id = id, tag = tag, numRef = numRef }
 
@@ -578,35 +776,33 @@ updateAccumulator ({ heading, indent, args, body, meta, properties } as block) a
                     accumulator
 
         Ordinary "list" ->
-            { accumulator | itemVector = Vector.init 4 }
+            { accumulator | itemVector = Vector.init accumulator.headingIndex.size }
 
         Ordinary "chapter" ->
             let
-                level : String
-                level =
-                    "0"
-            in
-            case getNameContentId block of
-                Just { name, content, id } ->
-                    updateWithOrdinarySectionBlock accumulator (Just name) content level id
-                        |> updateReferenceWithBlock block
+                newChapterCounter =
+                    accumulator.chapterCounter + 1
 
-                Nothing ->
-                    accumulator |> updateReferenceWithBlock block
+                chapterTag =
+                    Dict.get "label" block.properties
+                        |> Maybe.withDefault block.meta.id
+
+                referenceDatum =
+                    makeReferenceDatum block.meta.id chapterTag (String.fromInt newChapterCounter)
+            in
+            { accumulator
+                | chapterCounter = newChapterCounter
+                , headingIndex = Vector.init accumulator.headingIndex.size
+                , blockCounter = 0
+                , counter = Dict.insert "equation" 0 accumulator.counter
+            }
+                |> updateReference accumulator.headingIndex referenceDatum
 
         Ordinary "section" ->
             let
                 level : String
                 level =
-                    case Dict.get "has-chapters" accumulator.keyValueDict of
-                        Nothing ->
-                            Dict.get "level" properties |> Maybe.withDefault "1"
-
-                        Just "yes" ->
-                            Dict.get "level" properties |> Maybe.withDefault "1"
-
-                        _ ->
-                            Dict.get "level" properties |> Maybe.withDefault "1"
+                    Dict.get "level" properties |> Maybe.withDefault "1"
             in
             case getNameContentId block of
                 Just { name, content, id } ->
@@ -630,40 +826,53 @@ updateAccumulator ({ heading, indent, args, body, meta, properties } as block) a
 
         Ordinary "title" ->
             -- Only reset headingIndex if it wasn't set by shiftAndSetCounter (deltaLevel == 1)
+            let
+                -- Store number-to-level from title properties in keyValueDict
+                newKeyValueDict =
+                    case Dict.get "number-to-level" block.properties of
+                        Just ntl ->
+                            Dict.insert "number-to-level" ntl accumulator.keyValueDict
+
+                        Nothing ->
+                            accumulator.keyValueDict
+            in
             if accumulator.deltaLevel == 1 then
                 -- Preserve the headingIndex set by shiftAndSetCounter
-                accumulator
+                { accumulator | keyValueDict = newKeyValueDict }
 
             else
                 let
+                    vecSize =
+                        accumulator.headingIndex.size
+
                     headingIndex =
                         case Dict.get "first-section" block.properties of
                             Nothing ->
-                                { content = [ 0, 0, 0, 0 ], size = 4 }
+                                Vector.init vecSize
 
                             Just firstSection_ ->
                                 case String.toInt firstSection_ of
                                     Just n ->
-                                        { content = [ max (n - 1) 0, 0, 0, 0 ], size = 4 }
+                                        Vector.init vecSize |> Vector.set 0 (max (n - 1) 0)
 
                                     Nothing ->
-                                        { content = [ 0, 0, 0, 0 ], size = 4 }
+                                        Vector.init vecSize
                 in
-                { accumulator | headingIndex = headingIndex }
+                { accumulator | headingIndex = headingIndex, keyValueDict = newKeyValueDict }
 
         Ordinary "setcounter" ->
             let
                 n =
                     List.head args |> Maybe.andThen String.toInt |> Maybe.withDefault 1
             in
-            { accumulator | headingIndex = { content = [ n, 0, 0, 0 ], size = 4 } }
+            { accumulator | headingIndex = Vector.init accumulator.headingIndex.size |> Vector.set 0 n }
 
         Ordinary "shiftandsetcounter" ->
             let
                 n =
                     List.head args |> Maybe.andThen String.toInt |> Maybe.withDefault 1
             in
-            { accumulator | headingIndex = { content = [ n, 0, 0, 0 ], size = 4 }, deltaLevel = 1 }
+            { accumulator | headingIndex = Vector.init accumulator.headingIndex.size |> Vector.set 0 n, deltaLevel = 1 }
 
         Ordinary "bibitem" ->
             updateBibItemBlock accumulator args block.meta.id
@@ -674,7 +883,7 @@ updateAccumulator ({ heading, indent, args, body, meta, properties } as block) a
 
         -- provide for numbering of equations
         Verbatim "mathmacros" ->
-            case Generic.Language.getVerbatimContent block of
+            case getVerbatimContent block of
                 Nothing ->
                     accumulator
 
@@ -682,7 +891,7 @@ updateAccumulator ({ heading, indent, args, body, meta, properties } as block) a
                     updateWithMathMacros str accumulator
 
         Verbatim "textmacros" ->
-            case Generic.Language.getVerbatimContent block of
+            case getVerbatimContent block of
                 Nothing ->
                     accumulator
 
@@ -726,7 +935,7 @@ updateWithOrdinarySectionBlock accumulator name content level id =
 
         sectionTag =
             -- TODO: the below is a bad solution
-            titleWords |> List.map (String.toLower >> String.trim >> String.replace " " "-") |> String.join ""
+            titleWords |> List.map (String.toLower >> String.trim >> String.replace " " "-") |> String.concat
 
         delta =
             case Dict.get "has-chapters" accumulator.keyValueDict of
@@ -739,20 +948,41 @@ updateWithOrdinarySectionBlock accumulator name content level id =
                 _ ->
                     0
 
+        levelAsInt =
+            String.toInt level |> Maybe.withDefault 1
+
         headingIndex =
             Vector.increment (String.toInt level |> Maybe.withDefault 1 |> (\x -> x - 1 + delta + accumulator.deltaLevel)) accumulator.headingIndex
 
         blockCounter =
-            0
+            if levelAsInt <= accumulator.maxLevel then
+                0
+
+            else
+                accumulator.blockCounter
+
+        chapterPart =
+            if accumulator.chapterCounter > 0 then
+                String.fromInt accumulator.chapterCounter ++ "."
+
+            else
+                ""
 
         referenceDatum =
-            makeReferenceDatum id sectionTag (Vector.toString headingIndex)
+            makeReferenceDatum id sectionTag (chapterPart ++ Vector.toString headingIndex)
+
+        newCounter =
+            if levelAsInt <= accumulator.maxLevel then
+                Dict.insert "equation" 0 accumulator.counter
+
+            else
+                accumulator.counter
     in
     -- TODO: take care of numberedItemIndex = 0 here and elsewhere
     { accumulator
         | headingIndex = headingIndex
         , blockCounter = blockCounter
-        , counter = Dict.insert "equation" 0 accumulator.counter --TODO: this is strange!!
+        , counter = newCounter
     }
         |> updateReference accumulator.headingIndex referenceDatum
 
@@ -803,7 +1033,23 @@ updateBibItemBlock accumulator args id =
             accumulator
 
         Just label ->
-            { accumulator | reference = Dict.insert label { id = id, numRef = "_irrelevant_" } accumulator.reference }
+            let
+                -- Count how many bibliography entries already have numbers
+                nextNumber =
+                    accumulator.bibliography
+                        |> Dict.values
+                        |> List.filterMap identity
+                        |> List.length
+                        |> (+) 1
+
+                -- Update bibliography: set the number for this entry (insert if not present)
+                newBibliography =
+                    Dict.insert label (Just nextNumber) accumulator.bibliography
+            in
+            { accumulator
+                | reference = Dict.insert label { id = id, numRef = String.fromInt nextNumber } accumulator.reference
+                , bibliography = newBibliography
+            }
 
 
 updateWithOrdinaryBlock : ExpressionBlock -> Accumulator -> Accumulator
@@ -832,15 +1078,15 @@ updateWithOrdinaryBlock block accumulator =
         Just "numbered" ->
             let
                 level =
-                    block.indent // Config.indentationQuantum
+                    block.indent // Generic.Settings.indentationQuantum
 
                 itemVector =
                     case accumulator.inListState of
-                        SInList ->
+                        InList ->
                             Vector.increment level accumulator.itemVector
 
-                        SNotInList ->
-                            Vector.init 4 |> Vector.increment 0
+                        NotInList ->
+                            Vector.init accumulator.itemVector.size |> Vector.increment 0
 
                 index =
                     Vector.get level itemVector
@@ -861,7 +1107,7 @@ updateWithOrdinaryBlock block accumulator =
         Just "item" ->
             let
                 level =
-                    block.indent // Config.indentationQuantum
+                    block.indent // Generic.Settings.indentationQuantum
             in
             { accumulator | inListState = nextInListState block.heading accumulator.inListState }
 
@@ -870,25 +1116,36 @@ updateWithOrdinaryBlock block accumulator =
                 accumulator
 
             else if List.member name_ Generic.Settings.numberedBlockNames then
-                --- TODO: fix thereom labels
                 let
-                    level =
-                        block.indent // Config.indentationQuantum
+                    newBlockCounter =
+                        accumulator.blockCounter + 1
 
-                    itemVector =
-                        Vector.increment level accumulator.itemVector
+                    chapterPart =
+                        if accumulator.chapterCounter > 0 then
+                            String.fromInt accumulator.chapterCounter ++ "."
 
-                    numberedItemDict =
-                        Dict.insert block.meta.id { level = level, index = Vector.get level itemVector } accumulator.numberedItemDict
+                        else
+                            ""
+
+                    sectionPart =
+                        Vector.toStringWithLevel accumulator.maxLevel accumulator.headingIndex
+
+                    punctuation =
+                        if sectionPart /= "" then
+                            "."
+
+                        else
+                            ""
+
+                    numRef =
+                        chapterPart ++ sectionPart ++ punctuation ++ String.fromInt newBlockCounter
 
                     referenceDatum =
-                        makeReferenceDatum block.meta.id (getTag block) (String.fromInt (Vector.get level itemVector))
+                        makeReferenceDatum block.meta.id (getTag block) numRef
                 in
                 { accumulator
                     | inListState = nextInListState block.heading accumulator.inListState
-                    , blockCounter = accumulator.blockCounter + 1
-                    , itemVector = itemVector
-                    , numberedItemDict = numberedItemDict
+                    , blockCounter = newBlockCounter
                 }
                     |> updateReference accumulator.headingIndex referenceDatum
 
@@ -917,8 +1174,7 @@ updateWithMathMacros content accumulator =
                 |> String.trim
 
         mathMacroDict =
-            --Generic.MathMacro.makeMacroDict (String.trim definitions)
-            ETeX.Transform.makeMacroDict (String.trim definitions)
+            makeMathMacroDict (String.trim definitions)
     in
     { accumulator | mathMacroDict = mathMacroDict }
 
@@ -949,7 +1205,7 @@ updateWithVerbatimBlock block accumulator =
                                 referenceDatum =
                                     makeReferenceDatum block.meta.id
                                         tag
-                                        (verbatimBlockReference isSimple accumulator.headingIndex name newCounter)
+                                        (verbatimBlockReference isSimple accumulator.headingIndex name newCounter accumulator)
                             in
                             \acc -> updateReference accumulator.headingIndex referenceDatum acc
 
@@ -962,8 +1218,12 @@ updateWithVerbatimBlock block accumulator =
 
                 -- Increment the appropriate counter, e.g., "equation" and "aligned"
                 -- reduceName maps these both to "equation"
+                -- Counter increments when block has a label property (for numbered equations)
+                hasLabel =
+                    Dict.member "label" block.properties
+
                 newCounter =
-                    if List.member name accumulator.numberedBlockNames && List.member "numbered" block.args then
+                    if List.member name accumulator.numberedBlockNames && hasLabel then
                         incrementCounter (reduceName name) accumulator.counter
 
                     else
@@ -973,17 +1233,34 @@ updateWithVerbatimBlock block accumulator =
                 |> updateAccumulatorWithLabel
 
 
-verbatimBlockReference : Bool -> Vector -> String -> Dict String Int -> String
-verbatimBlockReference isSimple headingIndex name newCounter =
+verbatimBlockReference : Bool -> Vector -> String -> Dict String Int -> Accumulator -> String
+verbatimBlockReference isSimple headingIndex name newCounter acc =
     let
-        a =
-            Vector.toString headingIndex
+        chapterPart =
+            if acc.chapterCounter > 0 then
+                String.fromInt acc.chapterCounter ++ "."
+
+            else
+                ""
+
+        sectionPart =
+            Vector.toStringWithLevel acc.maxLevel headingIndex
+
+        punctuation =
+            if sectionPart /= "" then
+                "."
+
+            else
+                ""
+
+        eqNum =
+            getCounter (reduceName name) newCounter |> String.fromInt
     in
-    if a == "" || isSimple then
-        getCounter (reduceName name) newCounter |> String.fromInt
+    if isSimple then
+        eqNum
 
     else
-        a ++ "." ++ (getCounter (reduceName name) newCounter |> String.fromInt)
+        chapterPart ++ sectionPart ++ punctuation ++ eqNum
 
 
 updateWithParagraph : ExpressionBlock -> Accumulator -> Accumulator
@@ -991,12 +1268,16 @@ updateWithParagraph block accumulator =
     let
         ( footnotes, footnoteNumbers ) =
             addFootnotesFromContent block ( accumulator.footnotes, accumulator.footnoteNumbers )
+
+        bibliography =
+            addCitesFromContent block accumulator.bibliography
     in
     { accumulator
         | inListState = nextInListState block.heading accumulator.inListState
         , footnotes = footnotes
         , footnoteNumbers = footnoteNumbers
         , terms = addTermsFromContent block accumulator.terms
+        , bibliography = bibliography
     }
 
 
@@ -1014,16 +1295,54 @@ addTermsFromContent block_ dict =
     List.foldl folder dict newTerms
 
 
+{-| Extract cite keys from block content and add them to bibliography with Nothing value.
+Only adds if key doesn't already exist (preserves existing numbered entries).
+-}
+addCitesFromContent : ExpressionBlock -> Dict String (Maybe Int) -> Dict String (Maybe Int)
+addCitesFromContent block dict =
+    let
+        citeKeys =
+            getCiteKeys block.body
+    in
+    List.foldl
+        (\key d ->
+            if Dict.member key d then
+                d
+
+            else
+                Dict.insert key Nothing d
+        )
+        dict
+        citeKeys
+
+
+{-| Extract cite keys from block body content.
+-}
+getCiteKeys : Either String (List Expression) -> List String
+getCiteKeys content =
+    case content of
+        Right expressionList ->
+            Generic.ASTTools.filterExpressionsOnName_ "cite" expressionList
+                |> List.filterMap extractCiteKey
+
+        Left _ ->
+            []
+
+
+{-| Extract the key from a cite expression like [cite einstein1905].
+-}
+extractCiteKey : Expression -> Maybe String
+extractCiteKey expr =
+    case expr of
+        Fun "cite" [ Text key _ ] _ ->
+            Just (String.trim key)
+
+        _ ->
+            Nothing
+
+
 
 --|> updateReference tag id tag
-
-
-type alias TermLoc =
-    { begin : Int, end : Int, id : String }
-
-
-type alias TermLoc2 =
-    { begin : Int, end : Int, id : String, mSourceId : Maybe String }
 
 
 type alias TermData =
@@ -1038,7 +1357,14 @@ getTerms : String -> Either String (List Expression) -> List TermData
 getTerms id content_ =
     case content_ of
         Right expressionList ->
-            Generic.ASTTools.filterExpressionsOnName_ "term" expressionList
+            let
+                termExprs =
+                    Generic.ASTTools.filterExpressionsOnName_ "index" expressionList
+
+                termHiddenExprs =
+                    Generic.ASTTools.filterExpressionsOnName_ "term_" expressionList
+            in
+            (termExprs ++ termHiddenExprs)
                 |> List.map (extract id)
                 |> Maybe.Extra.values
 
@@ -1053,11 +1379,85 @@ getTerms id content_ =
 extract : String -> Expression -> Maybe TermData
 extract id expr =
     case expr of
-        Fun "term" [ Text name { begin, end } ] _ ->
-            Just { term = name, loc = { begin = begin, end = end, id = id } }
+        Fun "index" args _ ->
+            extractTermFromArgs id args
 
-        Fun "term_" [ Text name { begin, end } ] _ ->
-            Just { term = name, loc = { begin = begin, end = end, id = id } }
+        Fun "term_" args _ ->
+            extractTermFromArgs id args
+
+        _ ->
+            Nothing
+
+
+{-| Extract term data from function arguments, handling both single and multi-word terms.
+Supports optional list-as: property for custom index display.
+Example: [term change color list-as:color, change]
+-}
+extractTermFromArgs : String -> List Expression -> Maybe TermData
+extractTermFromArgs id args =
+    case args of
+        [ Text name { begin, end } ] ->
+            -- Single word term, possibly with show-as:
+            let
+                ( termName, displayAs ) =
+                    parseListAs name
+            in
+            Just { term = termName, loc = { begin = begin, end = end, id = id, displayAs = displayAs } }
+
+        (Text firstWord { begin }) :: rest ->
+            -- Multi-word term: join all text nodes
+            let
+                allWords =
+                    firstWord :: List.filterMap getTextContent rest
+
+                fullText =
+                    String.join " " allWords
+
+                ( termName, displayAs ) =
+                    parseListAs fullText
+
+                lastEnd =
+                    rest
+                        |> List.reverse
+                        |> List.head
+                        |> Maybe.andThen getTextEnd
+                        |> Maybe.withDefault begin
+            in
+            Just { term = termName, loc = { begin = begin, end = lastEnd, id = id, displayAs = displayAs } }
+
+        _ ->
+            Nothing
+
+
+{-| Parse a term string to extract the list-as: property if present.
+Returns (termName, Maybe displayAs).
+Example: "change color list-as:color, change" -> ("change color", Just "color, change")
+-}
+parseListAs : String -> ( String, Maybe String )
+parseListAs text =
+    case String.split "list-as:" text of
+        [ termPart, displayPart ] ->
+            ( String.trim termPart, Just (String.trim displayPart) )
+
+        _ ->
+            ( text, Nothing )
+
+
+getTextContent : Expression -> Maybe String
+getTextContent expr =
+    case expr of
+        Text str _ ->
+            Just str
+
+        _ ->
+            Nothing
+
+
+getTextEnd : Expression -> Maybe Int
+getTextEnd expr =
+    case expr of
+        Text _ { end } ->
+            Just end
 
         _ ->
             Nothing
@@ -1085,10 +1485,10 @@ getFootnotes mBlockId id content_ =
 
 
 extractFootnote : Maybe String -> String -> Expression -> Maybe TermData2
-extractFootnote mSourceId id_ expr =
+extractFootnote _ blockMetaId expr =
     case expr of
         Fun "footnote" [ Text content { begin, end, index, id } ] _ ->
-            Just { term = content, loc = { begin = begin, end = end, id = id, mSourceId = mSourceId } }
+            Just { term = content, loc = { begin = begin, end = end, id = id, mSourceId = Just blockMetaId } }
 
         _ ->
             Nothing
@@ -1122,7 +1522,7 @@ addFootnotesFromContent block ( dict1, dict2 ) =
                     Nothing
 
                 Right expr ->
-                    List.map Generic.Language.getMeta expr |> List.head |> Maybe.map .id
+                    Maybe.map getMeta (expr |> List.head) |> Maybe.map .id
     in
     addFootnotes (getFootnotes blockId block.meta.id block.body) ( dict1, dict2 )
 
@@ -1148,9 +1548,65 @@ getMacroArg name str =
 
 getTag : ExpressionBlock -> String
 getTag block =
-    case Dict.get "tag" block.properties of
-        Just tag ->
-            tag
+    case Dict.get "label" block.properties of
+        Just label ->
+            label
 
         Nothing ->
-            block.meta.id
+            case Dict.get "tag" block.properties of
+                Just tag ->
+                    tag
+
+                Nothing ->
+                    block.meta.id
+
+
+
+-- HELPER FUNCTIONS (moved from Generic.Language)
+
+
+getNameFromHeading : Heading -> Maybe String
+getNameFromHeading heading =
+    case heading of
+        Paragraph ->
+            Nothing
+
+        Ordinary name ->
+            Just name
+
+        Verbatim name ->
+            Just name
+
+
+getVerbatimContent : ExpressionBlock -> Maybe String
+getVerbatimContent block =
+    case block.body of
+        Left str ->
+            Just str
+
+        Right _ ->
+            Nothing
+
+
+getMeta : Expression -> ExprMeta
+getMeta expr =
+    case expr of
+        Fun _ _ meta ->
+            meta
+
+        VFun _ _ meta ->
+            meta
+
+        Text _ meta ->
+            meta
+
+        ExprList _ _ meta ->
+            meta
+
+
+{-| Create math macro dictionary from mathmacros block content.
+Supports both ETeX format (name: body) and LaTeX format (\\newcommand{...}).
+-}
+makeMathMacroDict : String -> MathMacroDict
+makeMathMacroDict content =
+    ETeX.Transform.makeMacroDict content

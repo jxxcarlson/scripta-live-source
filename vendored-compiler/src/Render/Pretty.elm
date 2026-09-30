@@ -1,56 +1,188 @@
-module Render.Pretty exposing (..)
+module Render.Pretty exposing (print)
 
-import Generic.Language
+{-| Pretty-print Scripta source code by parsing it into a forest of
+ExpressionBlocks and reconstructing formatted output with proper indentation.
+-}
+
+import Dict
+import Either exposing (Either(..))
+import Parser.Forest
 import RoseTree.Tree as Tree exposing (Tree)
-import ScriptaV2.Compiler
-import ScriptaV2.Language
+import V3.Types exposing (Expr(..), Expression, ExpressionBlock, Heading(..))
 
 
-print : ScriptaV2.Language.Language -> String -> String
-print lang str =
-    case lang of
-        ScriptaV2.Language.ScriptaLang ->
-            printToForest (str ++ "\n\n")
-                |> reduceForestToString
-                |> (\str_ -> str_ ++ "\n")
-
-        _ ->
-            str
-
-
-reduceForestToString : List (Tree String) -> String
-reduceForestToString forest =
-    forest
+{-| Pretty-print Scripta source text.
+-}
+print : String -> String
+print str =
+    (str ++ "\n\n")
+        |> String.lines
+        |> Parser.Forest.parse
+        |> List.map (treeMap printBlock)
         |> List.map treeToString
         |> String.join "\n\n"
+        |> (\s -> s ++ "\n")
 
 
-printToForest : String -> List (Tree String)
-printToForest str =
-    str
-        |> String.lines
-        |> ScriptaV2.Compiler.parseScripta "@@" 0
-        |> forestMap Generic.Language.printBlock
+{-| Convert a block back to its source text representation.
+-}
+printBlock : ExpressionBlock -> String
+printBlock block =
+    case block.heading of
+        Paragraph ->
+            case block.body of
+                Left str ->
+                    str
+
+                Right exprList ->
+                    List.map renderExpression exprList |> String.join " " |> compressSpaces
+
+        Ordinary name ->
+            printOrdinaryBlock name block
+
+        Verbatim name ->
+            printVerbatimBlock name block
 
 
-forestMap : (a -> b) -> List (Tree a) -> List (Tree b)
-forestMap f forest =
-    List.map (treeMap f) forest
+printOrdinaryBlock : String -> ExpressionBlock -> String
+printOrdinaryBlock name block =
+    let
+        content =
+            case block.body of
+                Left str ->
+                    str
+
+                Right exprList ->
+                    List.map renderExpression exprList |> String.join " " |> compressSpaces
+    in
+    case name of
+        "numbered" ->
+            ". " ++ String.trim content
+
+        "item" ->
+            "- " ++ String.trim content
+
+        "section" ->
+            let
+                level =
+                    Dict.get "level" block.properties
+                        |> Maybe.andThen String.toInt
+                        |> Maybe.withDefault 1
+
+                prefix =
+                    String.repeat level "#"
+            in
+            prefix ++ " " ++ String.trim content
+
+        "itemList" ->
+            case block.body of
+                Left str ->
+                    str
+
+                Right exprList ->
+                    List.map
+                        (\expr ->
+                            let
+                                n =
+                                    indentation expr
+                            in
+                            String.repeat n " " ++ "- " ++ renderExpression expr
+                        )
+                        exprList
+                        |> String.join "\n"
+
+        "numberedList" ->
+            case block.body of
+                Left str ->
+                    str
+
+                Right exprList ->
+                    List.map
+                        (\expr ->
+                            let
+                                n =
+                                    indentation expr
+                            in
+                            String.repeat n " " ++ ". " ++ renderExpression expr
+                        )
+                        exprList
+                        |> String.join "\n"
+
+        _ ->
+            ([ "|", name ] ++ block.args ++ dictToList block.properties |> String.join " ") ++ "\n" ++ content
+
+
+indentation : Expression -> Int
+indentation expr =
+    case expr of
+        ExprList n _ _ ->
+            n
+
+        _ ->
+            0
+
+
+renderExpression : Expression -> String
+renderExpression expr =
+    case expr of
+        Text str _ ->
+            str
+
+        Fun fName exprList _ ->
+            "[" ++ fName ++ " " ++ (List.map renderExpression exprList |> String.join "") ++ "]"
+
+        VFun fName body _ ->
+            case fName of
+                "math" ->
+                    "[m " ++ body ++ "]"
+
+                _ ->
+                    [ "[" ++ fName, body, "]" ] |> String.join " " |> compressSpaces
+
+        ExprList _ exprList _ ->
+            List.map renderExpression exprList |> String.join " " |> compressSpaces
+
+
+printVerbatimBlock : String -> ExpressionBlock -> String
+printVerbatimBlock name block =
+    let
+        content =
+            case block.body of
+                Left str ->
+                    str
+
+                Right _ ->
+                    ""
+
+        blockArgs =
+            case Dict.get "label" block.properties of
+                Nothing ->
+                    block.args
+
+                Just _ ->
+                    List.filter (\arg -> arg /= "numbered") block.args
+    in
+    ([ "|", name ] ++ blockArgs ++ dictToList block.properties |> String.join " ") ++ "\n" ++ content
+
+
+compressSpaces : String -> String
+compressSpaces str =
+    str |> String.words |> String.join " "
+
+
+dictToList : Dict.Dict String String -> List String
+dictToList dict =
+    dict
+        |> Dict.remove "id"
+        |> Dict.remove "outerId"
+        |> Dict.toList
+        |> List.map (\( key, value ) -> key ++ ":" ++ value)
 
 
 treeMap : (a -> b) -> Tree a -> Tree b
 treeMap f tree =
-    let
-        newValue =
-            f (Tree.value tree)
-
-        treeChildren =
-            Tree.children tree
-
-        newChildren =
-            List.map (treeMap f) treeChildren
-    in
-    Tree.branch newValue newChildren
+    Tree.branch (f (Tree.value tree))
+        (List.map (treeMap f) (Tree.children tree))
 
 
 treeToString : Tree String -> String
@@ -64,14 +196,11 @@ treeToStringHelper level tree =
         indent =
             String.repeat level "  "
 
-        currentLabel =
-            Tree.value tree
+        currentLine =
+            indent ++ Tree.value tree
 
         treeChildren =
             Tree.children tree
-
-        currentLine =
-            indent ++ currentLabel
 
         childLines =
             List.map (treeToStringHelper (level + 1)) treeChildren
@@ -82,93 +211,3 @@ treeToStringHelper level tree =
 
     else
         currentLine ++ "\n" ++ childLines
-
-
-thm =
-    """
-| theorem (Euclid) width:200
-There are infnitely many primes $p$.
-"""
-
-
-nl2 =
-    """
-. Foo [m x^2] bar
-  . Yada [m y^2] yada
-    . Tuuk more
-      . Blah blah
-      . Yip yip
-    . Tuuk less
-  . Mumbo jumbo
-. Ho ho ho
-"""
-
-
-cp2 =
-    """
-- Foo $x^2$ bar
-  - Yada $y^2$ yada
-  - Mumbo jumbo
-- Ho ho ho
-"""
-
-
-cp1 =
-    """
-- Foo $x^2$ bar
-- Ho ho ho
-
-"""
-
-
-cd =
-    """
-| code
-a := 1
-b := 1
-a + b
-"""
-
-
-s =
-    """
-This is a test - a test
-- a test - a test - a test 
-
-| equation
-a^2 + b^2 = c^2
-
-another test
-[b and another] 
-[i and another]"""
-
-
-t : Tree String
-t =
-    Tree.branch "I"
-        [ Tree.branch "A"
-            [ Tree.leaf "1"
-            , Tree.leaf "2"
-            , Tree.leaf "3"
-            ]
-        , Tree.branch "B"
-            [ Tree.leaf "1"
-            , Tree.leaf "2"
-            , Tree.leaf "3"
-            ]
-        ]
-
-
-li1 =
-    """
-. (a) As you edit a document, the rendered version is updated as you type.
-(b) As you edit a document, the rendered version is updated as you type.
-(c) As you edit a document, the rendered version is updated as you type.
-"""
-
-
-li =
-    """
-. [b Real-time rendering:] [i As you edit a document], the rendered version is updated as you type.  In real time, [u instantaneosly], along
-with cross-references and the automatically generated table of [u contents].
-"""
