@@ -11,7 +11,6 @@ import Constants exposing (constants)
 import Dict
 import Document exposing (Document)
 import Either
-import Editor
 import Element exposing (..)
 import File.Download
 import Frontend.PDF
@@ -23,15 +22,7 @@ import List.Extra
 import Ports
 import Process
 import Random
-import Render.Export.LaTeX
-import Render.Settings
-import Render.Types
-import ScriptaV2.API
-import ScriptaV2.DifferentialCompiler
-import ScriptaV2.Helper
-import ScriptaV2.Types
-import ScriptaV2.Language
-import ScriptaV2.Msg exposing (MarkupMsg)
+import ScriptaExport
 import Storage.Interface as Storage
 import Storage.Tauri
 import Task
@@ -121,114 +112,27 @@ updateCommon msg model =
             ( model, Cmd.none )
 
         Common.InputText str ->
+            ( { model | common = Common.applyEdit str common }, Cmd.none )
+
+        Common.InputText2 { source } ->
             let
-                newEditRecord =
-                    ScriptaV2.DifferentialCompiler.update Nothing common.editRecord str
-
-                newCount =
-                    common.count + 1
-
-                updatedDisplaySettings =
-                    let
-                        oldSettings = common.displaySettings
-                        panelWidth = max 350 ((common.windowWidth - 230 - (if common.windowWidth >= 1000 then 221 else 0) - 3) // 2)
-                        contentWidth = panelWidth - 40  -- Reduced padding experiment
-                    in
-                    { oldSettings | counter = newCount, windowWidth = max 310 contentWidth }
-
-                newCompilerOutput =
-                    ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (makeCompilerParams { common | displaySettings = updatedDisplaySettings, count = newCount })
-                        newEditRecord
-
                 newCommon =
-                    { common
-                        | sourceText = str
-                        , title = Common.getTitleFromContent str
-                        , editRecord = newEditRecord
-                        , compilerOutput = newCompilerOutput
-                        , lastChanged = common.currentTime
-                        , count = newCount
-                        , displaySettings = updatedDisplaySettings
-                    }
+                    Common.applyEdit source common
             in
-            ( { model | common = newCommon }, Cmd.none )
+            ( { model | common = { newCommon | loadDocumentIntoEditor = False } }, Cmd.none )
 
-        Common.InputText2 { position, source } ->
-            let
-                newEditRecord =
-                    ScriptaV2.DifferentialCompiler.update Nothing common.editRecord source
-
-                newCount =
-                    common.count + 1
-
-                updatedDisplaySettings =
-                    let
-                        oldSettings = common.displaySettings
-                        panelWidth = max 350 ((common.windowWidth - 230 - (if common.windowWidth >= 1000 then 221 else 0) - 3) // 2)
-                        contentWidth = panelWidth - 40  -- Reduced padding experiment
-                    in
-                    { oldSettings | counter = newCount, windowWidth = max 310 contentWidth }
-
-                newCompilerOutput =
-                    ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (makeCompilerParams { common | displaySettings = updatedDisplaySettings, count = newCount })
-                        newEditRecord
-
-                newCommon =
-                    { common
-                        | sourceText = source
-                        , title = Common.getTitleFromContent source
-                        , editRecord = newEditRecord
-                        , compilerOutput = newCompilerOutput
-                        , lastChanged = common.currentTime
-                        , count = newCount
-                        , displaySettings = updatedDisplaySettings
-                        , loadDocumentIntoEditor = False  -- Turn off loading after edit
-                    }
-            in
-            ( { model | common = newCommon }, Cmd.none )
-
-        Common.Render markupMsg ->
-            case markupMsg of
-                ScriptaV2.Msg.SendLineNumber editorData ->
-                    ( { model | common = { common | editorData = editorData } }
-                    , Cmd.none
-                    )
-
-                _ ->
-                    ( model, Cmd.none )
+        Common.CompilerEvent event ->
+            ( model, Common.compilerEventCmd event )
 
         Common.GotNewWindowDimensions width height ->
             let
-                displaySettings =
-                    common.displaySettings
-
-                panelWidth = max 350 ((width - 230 - (if width >= 1000 then 221 else 0) - 3) // 2)
-
-                contentWidth = panelWidth - 40  -- Reduced padding experiment
-
-                newDisplaySettings =
-                    { displaySettings
-                        | windowWidth = max 310 contentWidth
-                    }
-
-                newEditRecord =
-                    ScriptaV2.DifferentialCompiler.update Nothing common.editRecord common.sourceText
-
-                newCompilerOutput =
-                    ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (makeCompilerParams { common | displaySettings = newDisplaySettings, windowWidth = width })
-                        newEditRecord
-
                 newCommon =
                     { common
                         | windowWidth = width
                         , windowHeight = height
-                        , displaySettings = newDisplaySettings
-                        , editRecord = newEditRecord
-                        , compilerOutput = newCompilerOutput
+                        , displaySettings = { windowWidth = Common.contentWidth width }
                     }
+                        |> Common.refreshOptions
             in
             ( { model | common = newCommon }, Cmd.none )
 
@@ -247,20 +151,8 @@ updateCommon msg model =
                     else
                         Theme.Dark
 
-                newEditRecord =
-                    ScriptaV2.DifferentialCompiler.update Nothing common.editRecord common.sourceText
-
-                newCompilerOutput =
-                    ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (makeCompilerParams { common | theme = newTheme })
-                        newEditRecord
-
                 newCommon =
-                    { common
-                        | theme = newTheme
-                        , editRecord = newEditRecord
-                        , compilerOutput = newCompilerOutput
-                    }
+                    Common.refreshOptions { common | theme = newTheme }
             in
             ( { model | common = newCommon }
             , Cmd.none  -- Theme is saved with each document
@@ -299,24 +191,16 @@ updateCommon msg model =
                 newDoc =
                     Document.newDocument id "New Document" (Maybe.withDefault "" common.userName) newDocumentContent common.theme common.currentTime
 
-                editRecord =
-                    ScriptaV2.DifferentialCompiler.init Nothing Dict.empty common.currentLanguage newDocumentContent
-
-                compilerOutput =
-                    ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (makeCompilerParams common)
-                        editRecord
+                loadedCommon =
+                    Common.loadSource newDocumentContent common
 
                 newCommon =
-                    { common
+                    { loadedCommon
                         | currentDocument = Just newDoc
-                        , sourceText = newDocumentContent
                         , initialText = newDocumentContent
                         , title = "New Document"
-                        , editRecord = editRecord
                         , lastLoadedDocumentId = Just id
                         , loadDocumentIntoEditor = True
-                        , compilerOutput = compilerOutput
                         , printingState = Common.PrintWaiting
                         , pdfLink = ""
                     }
@@ -432,18 +316,8 @@ updateCommon msg model =
 
         Common.ExportToLaTeX ->
             let
-                settings =
-                    Render.Settings.makeSettings (makeCompilerParams common)
-
-                publicationData =
-                    { title = common.title
-                    , authorList = []
-                    , kind = Render.Types.DKArticle
-                    , date = Either.Left common.currentTime
-                    }
-
                 exportText =
-                    Render.Export.LaTeX.export publicationData settings common.editRecord.tree
+                    ScriptaExport.latex { title = common.title, date = common.currentTime } common.sourceText
             in
             ( model
             , Ports.tauriCommand <|
@@ -457,11 +331,8 @@ updateCommon msg model =
 
         Common.ExportToRawLaTeX ->
             let
-                settings =
-                    Render.Settings.makeSettings (makeCompilerParams common)
-
                 exportText =
-                    Render.Export.LaTeX.rawExport settings common.editRecord.tree
+                    ScriptaExport.rawLatex common.sourceText
             in
             ( model
             , Ports.tauriCommand <|
@@ -502,18 +373,8 @@ updateCommon msg model =
 
         Common.PrintToPDF ->
             let
-                settings =
-                    Render.Settings.makeSettings (makeCompilerParams common)
-
-                publicationData =
-                    { title = common.title
-                    , authorList = []
-                    , kind = Render.Types.DKArticle
-                    , date = Either.Left common.currentTime
-                    }
-
                 exportText =
-                    Render.Export.LaTeX.export publicationData settings common.editRecord.tree
+                    ScriptaExport.latex { title = common.title, date = common.currentTime } common.sourceText
 
                 fileName =
                     if String.trim common.title == "" then
@@ -556,44 +417,6 @@ updateCommon msg model =
                     , Cmd.none
                     )
 
-        Common.SelectedText str ->
-            let
-                foundIds =
-                    ScriptaV2.Helper.matchingIdsInAST str common.editRecord.tree
-                        |> List.filter (\id -> id /= "")
-                
-                firstId =
-                    List.head foundIds |> Maybe.withDefault ""
-                
-                -- Update displaySettings with new selectedId
-                oldDisplaySettings = common.displaySettings
-                newDisplaySettings = { oldDisplaySettings | selectedId = firstId }
-                
-                -- Re-render with updated settings
-                newCompilerOutput =
-                    ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (makeCompilerParams { common | displaySettings = newDisplaySettings, selectedId = firstId })
-                        common.editRecord
-                
-                newCommon =
-                    { common
-                        | selectedId = firstId
-                        , foundIds = foundIds
-                        , foundIdIndex = if List.isEmpty foundIds then 0 else 1
-                        , displaySettings = newDisplaySettings
-                        , compilerOutput = newCompilerOutput
-                    }
-            in
-            ( { model | common = newCommon }
-            , if firstId /= "" then
-                -- Add a delay to ensure DOM is updated with new elements
-                -- Using 100ms to give more time for rendering to complete
-                Process.sleep 100
-                    |> Task.perform (\_ -> CommonMsg (Common.SelectId firstId))
-              else
-                Cmd.none
-            )
-
         Common.LoadContentIntoEditorDelayed ->
             ( { model | common = { common | loadDocumentIntoEditor = True } }
             , Process.sleep 100
@@ -605,37 +428,20 @@ updateCommon msg model =
             , Cmd.none
             )
 
-        Common.StartSync ->
-            ( { model | common = { common | doSync = not common.doSync } }
-            , Cmd.none
-            )
-
-        Common.SelectId id ->
-            -- Jump to the id after DOM has had time to update
-            ( model, jumpToId id )
-
         Common.InitialDocumentId content title currentTime theme id ->
             let
                 initialDoc =
                     Document.newDocument id title (Maybe.withDefault "" common.userName) content theme currentTime
 
-                editRecord =
-                    ScriptaV2.DifferentialCompiler.init Nothing Dict.empty common.currentLanguage content
-
-                compilerOutput =
-                    ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (makeCompilerParams common)
-                        editRecord
+                loadedCommon =
+                    Common.loadSource content common
 
                 newCommon =
-                    { common
+                    { loadedCommon
                         | currentDocument = Just initialDoc
-                        , sourceText = content
                         , initialText = content
                         , title = title
-                        , editRecord = editRecord
                         , loadDocumentIntoEditor = True
-                        , compilerOutput = compilerOutput
                     }
             in
             ( { model | common = { newCommon | lastSavedDocumentId = Just initialDoc.id } }
@@ -648,28 +454,6 @@ updateCommon msg model =
         _ ->
             -- Handle other messages with no-op for now
             ( model, Cmd.none )
-
-
-makeCompilerParams : Common.CommonModel -> ScriptaV2.Types.CompilerParameters
-makeCompilerParams common =
-    let
-        oldParams = common.params
-    in
-    { oldParams
-        | filter = ScriptaV2.Types.SuppressDocumentBlocks
-        , theme = Theme.mapTheme common.theme
-        , editCount = common.count
-        , selectedId = common.selectedId
-        , selectedSlug = common.displaySettings.selectedSlug
-        , idsOfOpenNodes = common.displaySettings.idsOfOpenNodes
-        , windowWidth = common.displaySettings.windowWidth
-        , longEquationLimit = common.displaySettings.longEquationLimit
-        , scale = common.displaySettings.scale
-        , numberToLevel = common.displaySettings.numberToLevel
-        , data = common.displaySettings.data
-        , docWidth = common.displaySettings.windowWidth
-        , lang = common.currentLanguage
-    }
 
 
 handleStorageMsg : Storage.StorageMsg -> Model -> ( Model, Cmd Msg )
@@ -697,23 +481,19 @@ handleStorageMsg msg model =
 
         Storage.DocumentLoaded (Ok doc) ->
             let
-                editRecord =
-                    ScriptaV2.DifferentialCompiler.init Nothing Dict.empty common.currentLanguage doc.content
-
-                compilerOutput =
-                    ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (makeCompilerParams { common | theme = doc.theme })
-                        editRecord
+                -- The document carries its theme: set it before rendering
+                loadedCommon =
+                    { common
+                        | theme = doc.theme
+                        , options = Common.makeOptions doc.theme common.displaySettings
+                    }
+                        |> Common.loadSource doc.content
 
                 newCommon =
-                    { common
+                    { loadedCommon
                         | currentDocument = Just doc
-                        , sourceText = doc.content
                         , initialText = doc.content
                         , title = doc.title
-                        , theme = doc.theme
-                        , editRecord = editRecord
-                        , compilerOutput = compilerOutput
                         , loadDocumentIntoEditor = True
                         , lastLoadedDocumentId = Just doc.id
                         , printingState = Common.PrintWaiting
@@ -816,15 +596,6 @@ handleStorageMsg msg model =
                     model.common.theme
                     model.common.currentTime
 
-                -- Update the model with the new document
-                editRecord =
-                    ScriptaV2.DifferentialCompiler.init Nothing Dict.empty model.common.currentLanguage content
-
-                compilerOutput =
-                    ScriptaV2.DifferentialCompiler.editRecordToCompilerOutput
-                        (makeCompilerParams model.common)
-                        editRecord
-
                 updatedCommon =
                     let
                         oldCommon = model.common
@@ -833,13 +604,11 @@ handleStorageMsg msg model =
                         | currentDocument = Just newDoc
                         , documents = newDoc :: model.common.documents
                         , lastLoadedDocumentId = Just newId
-                        , sourceText = content
                         , initialText = content
                         , title = title
-                        , editRecord = editRecord
-                        , compilerOutput = compilerOutput
                         , loadDocumentIntoEditor = True
                     }
+                        |> Common.loadSource content
 
                 -- Get the storage command to save the document
                 storage = Storage.Tauri.storage StorageMsg
@@ -869,7 +638,7 @@ handleStorageMsg msg model =
 
 view : Model -> Html Msg
 view model =
-    Common.View.view CommonMsg (CommonMsg << Common.Render) model.common
+    Common.View.view CommonMsg (CommonMsg << Common.CompilerEvent) model.common
 
 
 -- SUBSCRIPTIONS
@@ -887,45 +656,6 @@ subscriptions model =
 
 
 -- HELPERS
-
-
-jumpToId : String -> Cmd Msg
-jumpToId id =
-    if String.isEmpty id then
-        Cmd.none
-    else
-        -- Get both the target element and container element
-        Task.map3 (\a b c -> (a, b, c))
-            (Browser.Dom.getElement id)
-            (Browser.Dom.getElement "rendered-text-container")
-            (Browser.Dom.getViewportOf "rendered-text-container")
-            |> Task.andThen (\(targetEl, containerEl, viewport) ->
-                let
-                    -- Calculate the position of the target relative to the page
-                    targetPageY = targetEl.element.y
-                    containerPageY = containerEl.element.y
-
-                    -- The target's position relative to the container's top
-                    relativeY = targetPageY - containerPageY
-
-                    -- Add current scroll to get absolute position in scrollable content
-                    absoluteY = relativeY + viewport.viewport.y
-
-                    -- Calculate where to scroll to center the element
-                    elementHeight = targetEl.element.height
-                    viewportHeight = viewport.viewport.height
-                    scrollY = absoluteY - (viewportHeight / 2) + (elementHeight / 2)
-
-                    -- Clamp to valid range
-                    finalScrollY = max 0 scrollY
-                in
-                -- Scroll the container
-                Browser.Dom.setViewportOf "rendered-text-container" 0 finalScrollY
-            )
-            |> Task.attempt (\_ -> CommonMsg Common.NoOp)
-
-
--- ID GENERATION
 
 
 generateId : Random.Generator String

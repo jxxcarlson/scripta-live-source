@@ -22,6 +22,9 @@
     
     <!-- CodeMirror editor custom element -->
     <script src="codemirror-element.js"></script>
+
+    <!-- Editor <-> rendered-text sync -->
+    <script src="editor-sync.js"></script>
     
     <style>
         body {
@@ -48,6 +51,7 @@
                 theme: localStorage.getItem('theme')
             }
         });
+        setupEditorSync(app);
         
         // Handle localStorage operations
         app.ports.outgoing.subscribe((message) => {
@@ -166,24 +170,6 @@
             console.log('Waiting for KaTeX library to load...');
         }
         
-        // Initialize CodeMirror after a delay to ensure DOM is ready
-        setTimeout(() => {
-            console.log('Initializing CodeMirror...');
-            if (typeof initCodeMirror === 'function') {
-                initCodeMirror();
-                console.log('CodeMirror initialized');
-                
-                // Verify the editor element exists
-                const editorElement = document.getElementById('editor-here');
-                if (editorElement) {
-                    console.log('Editor container found:', editorElement);
-                } else {
-                    console.error('Editor container #editor-here not found!');
-                }
-            } else {
-                console.error('initCodeMirror function not found!');
-            }
-        }, 500); // Give Elm time to render
     </script>
 </body>
 </html>

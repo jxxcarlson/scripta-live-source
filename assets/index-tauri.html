@@ -23,6 +23,9 @@
     
     <!-- CodeMirror editor custom element -->
     <script src="codemirror-element.js"></script>
+
+    <!-- Editor <-> rendered-text sync -->
+    <script src="editor-sync.js"></script>
     
     <style>
         body {
@@ -69,6 +72,7 @@
                 theme: null // Will be loaded from SQLite
             }
         });
+        setupEditorSync(app);
         
         console.log('Elm app initialized successfully');
         
@@ -221,46 +225,6 @@
             window.dispatchEvent(new Event('resize'));
         }, 500);
         
-        // Initialize CodeMirror after a delay to ensure DOM is ready
-        setTimeout(() => {
-            console.log('Initializing CodeMirror...');
-            if (typeof initCodeMirror === 'function') {
-                try {
-                    initCodeMirror();
-                    console.log('CodeMirror initialized');
-                    
-                    // Add error handling for CodeMirror events
-                    document.addEventListener('text-change', function(event) {
-                        console.log('text-change event:', event.detail);
-                    });
-                    
-                    document.addEventListener('selected-text', function(event) {
-                        console.log('selected-text event:', event.detail);
-                    });
-                    
-                    // Verify the editor element exists
-                    setTimeout(() => {
-                        const editorElement = document.getElementById('editor-here');
-                        if (editorElement) {
-                            console.log('Editor container found:', editorElement);
-                            // Check if CodeMirror instance exists
-                            const cmEditors = document.querySelectorAll('codemirror-editor');
-                            console.log('CodeMirror editors found:', cmEditors.length);
-                            cmEditors.forEach((editor, index) => {
-                                console.log(`Editor ${index}:`, editor);
-                                console.log(`Editor ${index} value:`, editor.editorValue);
-                            });
-                        } else {
-                            console.error('Editor container #editor-here not found!');
-                        }
-                    }, 1000)
-                } catch (error) {
-                    console.error('Error initializing CodeMirror:', error);
-                }
-            } else {
-                console.error('initCodeMirror function not found!');
-            }
-        }, 500); // Give Elm time to render
         }); // End waitForTauri callback
         })(); // End IIFE
     </script>

@@ -9,6 +9,9 @@ module Common.Model exposing
     , SortOrder(..)
     , getTitle
     , getTitleFromContent
+    , applyEdit
+    , compilerEventCmd
+    , contentWidth
     , initCommon
     , loadSource
     , makeOptions
@@ -168,23 +171,7 @@ initCommon flags =
             Time.millisToPosix flags.currentTime
 
         displaySettings =
-            { windowWidth =
-                max 310
-                    (max 350
-                        ((flags.window.windowWidth - 230
-                            - (if flags.window.windowWidth >= 1000 then
-                                221
-
-                               else
-                                0
-                              )
-                            - 3
-                         )
-                            // 2
-                        )
-                        - 40
-                    )
-            }
+            { windowWidth = contentWidth flags.window.windowWidth }
 
         options =
             makeOptions theme displaySettings
@@ -280,6 +267,71 @@ refreshOptions model =
         | options = options
         , compilerOutput = Scripta.render options model.document
     }
+
+
+{-| Apply an edit from the editor: incremental reparse, title and change tracking.
+-}
+applyEdit : String -> CommonModel -> CommonModel
+applyEdit source model =
+    let
+        newModel =
+            updateSource source model
+    in
+    { newModel
+        | title = getTitleFromContent source
+        , lastChanged = model.currentTime
+        , count = model.count + 1
+    }
+
+
+{-| Width of the rendered text column for a given window width:
+half of what is left after the sidebar (230), TOC (221, shown from 1000px)
+and borders, minus padding.
+-}
+contentWidth : Int -> Int
+contentWidth windowWidth =
+    let
+        panelWidth =
+            max 350
+                ((windowWidth
+                    - 230
+                    - (if windowWidth >= 1000 then
+                        221
+
+                       else
+                        0
+                      )
+                    - 3
+                 )
+                    // 2
+                )
+    in
+    max 310 (panelWidth - 40)
+
+
+{-| Clicks in the rendered text. Plain text clicks emit nothing in v3;
+selecting rendered text is synced to the editor in JS (assets/editor-sync.js).
+-}
+compilerEventCmd : Scripta.Event -> Cmd msg
+compilerEventCmd event =
+    case event of
+        Scripta.ClickedId id ->
+            Ports.scrollToElement id
+
+        Scripta.ClickedFootnote { targetId } ->
+            Ports.scrollToElement targetId
+
+        Scripta.ClickedCitation { targetId } ->
+            Ports.scrollToElement targetId
+
+        Scripta.HighlightedId _ ->
+            Cmd.none
+
+        Scripta.ClickedImage _ ->
+            Cmd.none
+
+        Scripta.ClickedLink _ ->
+            Cmd.none
 
 
 getTitle : CommonModel -> String

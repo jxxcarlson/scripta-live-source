@@ -342,17 +342,17 @@ updateCommon msg model =
             ( model, Cmd.none )
 
         Common.InputText str ->
-            ( { model | common = applyEdit str common }, Cmd.none )
+            ( { model | common = Common.applyEdit str common }, Cmd.none )
 
         Common.InputText2 { source } ->
             let
                 newCommon =
-                    applyEdit source common
+                    Common.applyEdit source common
             in
             ( { model | common = { newCommon | loadDocumentIntoEditor = False } }, Cmd.none )
 
         Common.CompilerEvent event ->
-            handleCompilerEvent event model
+            ( model, Common.compilerEventCmd event )
 
         Common.GotNewWindowDimensions width height ->
             let
@@ -360,7 +360,7 @@ updateCommon msg model =
                     { common
                         | windowWidth = width
                         , windowHeight = height
-                        , displaySettings = { windowWidth = contentWidth width }
+                        , displaySettings = { windowWidth = Common.contentWidth width }
                     }
                         |> Common.refreshOptions
             in
@@ -916,71 +916,6 @@ subscriptions model =
 
 
 -- HELPERS
-
-
-{-| Apply an edit from the editor: incremental reparse, title and change tracking.
--}
-applyEdit : String -> Common.CommonModel -> Common.CommonModel
-applyEdit source common =
-    let
-        newCommon =
-            Common.updateSource source common
-    in
-    { newCommon
-        | title = Common.getTitleFromContent source
-        , lastChanged = common.currentTime
-        , count = common.count + 1
-    }
-
-
-{-| Width of the rendered text column for a given window width:
-half of what is left after the sidebar, TOC and borders, minus padding.
--}
-contentWidth : Int -> Int
-contentWidth windowWidth =
-    let
-        panelWidth =
-            max 350
-                ((windowWidth
-                    - 230
-                    - (if windowWidth >= 1000 then
-                        221
-
-                       else
-                        0
-                      )
-                    - 3
-                 )
-                    // 2
-                )
-    in
-    max 310 (panelWidth - 40)
-
-
-{-| Clicks in the rendered text. Plain text clicks emit nothing in v3;
-text selection in the rendered text is synced to the editor in JS.
--}
-handleCompilerEvent : Scripta.Event -> Model -> ( Model, Cmd Msg )
-handleCompilerEvent event model =
-    case event of
-        Scripta.ClickedId id ->
-            ( model, Ports.scrollToElement id )
-
-        Scripta.ClickedFootnote { targetId } ->
-            ( model, Ports.scrollToElement targetId )
-
-        Scripta.ClickedCitation { targetId } ->
-            ( model, Ports.scrollToElement targetId )
-
-        Scripta.HighlightedId _ ->
-            ( model, Cmd.none )
-
-        Scripta.ClickedImage _ ->
-            ( model, Cmd.none )
-
-        Scripta.ClickedLink _ ->
-            ( model, Cmd.none )
-
 
 
 -- ID GENERATION
