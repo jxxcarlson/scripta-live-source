@@ -32,15 +32,16 @@ elm make src/Main.elm --output=./assets/main.js
 ## Architecture
 
 The project follows standard Elm Architecture with:
-- **Main.elm**: Application entry point implementing TEA (The Elm Architecture)
-- **ScriptaV2.API**: Core compiler API (`compile` function)
+- **MainSQLite.elm / MainLocal.elm / MainTauri.elm**: entry points (web+SQLite, web+localStorage, Tauri); they share `Common.Model` and `Common.View`
+- **Scripta** (vendored compiler API): `parse`/`reparse`/`render`, output is `Html Scripta.Event`
 - **Data/*.elm**: Sample texts demonstrating each language syntax
 
 Key architectural points:
-- The actual compiler lives in `../src/ScriptaV2/` (parent directory)
+- The compiler is a copy of `../scripta-compiler-v3/src` in `vendored-compiler/src/` (commit in `vendored-compiler/VERSION.md`)
 - This demo wraps the compiler with a UI for testing
-- Real-time compilation happens on every text change
+- Real-time compilation happens on every text change (incremental `Scripta.reparse`)
 - KaTeX is loaded for mathematical expression rendering
+- Build with Elm 0.19.1 (`~/.elm/elm-tooling/elm/0.19.1/elm` if the PATH `elm` is 0.19.2)
 
 ## Important Notes
 

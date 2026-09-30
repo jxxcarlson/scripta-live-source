@@ -104,57 +104,37 @@ The application follows standard Elm Architecture (TEA):
 - **View** - UI rendering using elm-ui
 
 Key components:
-- `ScriptaV2.API` - Core compiler API
-- `ScriptaV2.DifferentialCompiler` - Incremental compilation for live editing
-- `Render.Block` - Rendering compiled output to HTML
+- `Scripta` (vendored compiler) - public API: `parse` / `reparse` build a `Document`, `render` turns it into `Html` emitting `Scripta.Event`s
+- `Common.Model` - shared model; `loadSource`, `updateSource` and `refreshOptions` keep the parsed document and rendered output current
+- `ScriptaExport` - LaTeX export and image urls for PDF, using the compiler's internal modules
+- `assets/codemirror-element.js` - the editor, built from `editor-prepare/scripta-editor.js`
+- `assets/editor-sync.js` - editor ↔ rendered-text sync (select rendered text → editor; Ctrl+S in the editor → rendered text; ESC clears)
 
-The actual compiler lives in the `vendored-compiler/src/ScriptaV2/` directory.
+The compiler lives in `vendored-compiler/src/`, a copy of `scripta-compiler-v3` (see `vendored-compiler/VERSION.md` for the commit). LaTeX import uses `vendored-converter/latex/`.
 
 ## Updating the Vendored Compiler
 
-The application uses a vendored copy of the Scripta compiler. When the compiler is updated, you may need to fix compatibility issues.
-
-### Update Process
-
-1. **Update the vendored compiler files** (usually done via a script or manual copy from the main compiler repo)
-
-2. **Identify breaking changes** by compiling:
+1. Replace `vendored-compiler/src` with the chosen commit of `../scripta-compiler-v3` and record it in `vendored-compiler/VERSION.md`:
    ```bash
-   elm make src/MainSQLite.elm --output=/dev/null
+   rm -rf vendored-compiler/src
+   git -C ../scripta-compiler-v3 archive <commit> src | tar -x -C vendored-compiler
+   rm vendored-compiler/src/TestData.elm
    ```
 
-3. **Common issues to fix:**
-
-   - **Module/type renames**: Update imports and type references
-   - **Function signature changes**: Adjust function calls to match new signatures
-   - **Removed/renamed variants**: Update pattern matches and constructors
-
-4. **Test compilation:**
+2. Compile the three entry points. The app uses Elm 0.19.1; if the `elm` on your PATH is 0.19.2, use the 0.19.1 binary from elm-tooling:
    ```bash
-   # Test main build
-   elm make src/MainSQLite.elm --output=/dev/null
-
-   # Test with elm-watch
-   npx elm-watch hot
+   ELM=~/.elm/elm-tooling/elm/0.19.1/elm
+   $ELM make src/MainSQLite.elm --output=assets/main-sqlite.js
+   $ELM make src/MainLocal.elm --output=assets/main-local.js
+   $ELM make src/MainTauri.elm --output=assets/main-tauri.js
    ```
 
-5. **Run the app to verify:**
+3. If the compiler's editor changed, update `editor-prepare/scripta-editor.js` from `scripta-compiler-v3/Demo/codemirror-element.js` (keep the local change in `setEditorText` that scrolls to the top on load) and rebuild:
    ```bash
-   ./run.sh
+   cd editor-prepare && npx rollup -c rollup.scripta.config.mjs
    ```
 
-### Recent Update Example
-
-When updating from an older compiler version, we fixed:
-
-- `M.PrimitiveBlock` → `Scripta.PrimitiveBlock`
-- `ScriptaV2.Language.EnclosureLang` → `ScriptaV2.Language.ScriptaLang`
-- `ScriptaV2.Compiler.SuppressDocumentBlocks` → `ScriptaV2.Types.SuppressDocumentBlocks`
-- Function signatures for `compileStringWithTitle` and `editRecordToCompilerOutput` changed from multiple parameters to a single `CompilerParameters` record
-
-### Compatibility Helpers
-
-Created `makeCompilerParams` helper function in `Main.elm` to build the new `CompilerParameters` record from the existing model structure, making the migration easier.
+`src/Main.elm` (the older Tauri/LocalStorage build) and `src/ViewScripta.elm` (the `vs` viewer) have not been ported to v3 and do not compile.
 
 ## Additional Tools
 
