@@ -22,7 +22,6 @@ import List.Extra
 import Random
 import Scripta
 import Style
-import Sync
 import Task
 import Theme
 import Time
