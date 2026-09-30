@@ -268,16 +268,35 @@
   });
 
   // Ctrl+S in the editor (emitted by codemirror-element.js): highlight the
-  // rendered element whose source line is closest at or before the selection.
+  // rendered element for the selection. Blocks (images, display math, list
+  // items, ...) carry absolute source offsets, so first find the innermost
+  // block containing the selection; within it (or in the whole output, for
+  // paragraphs, which carry no offsets) pick the text element whose source
+  // line is closest at or before the selection. A block with no such element
+  // (an image, display math) is highlighted itself.
   document.addEventListener('sync-to-rendered', function (e) {
     const lineNumber = e.detail.lineNumber;
     clearRenderedHighlights();
     const output = renderedOutput();
     if (!output) return;
 
+    let block = null;
+    const editorEl = editorElement();
+    if (editorEl && lineNumber <= editorEl.editor.state.doc.lines) {
+      const pos = editorEl.editor.state.doc.line(lineNumber).from + (e.detail.charOffset || 0);
+      output.querySelectorAll('[data-lines][data-begin]').forEach(function (el) {
+        const begin = parseInt(el.getAttribute('data-begin'), 10);
+        const end = parseInt(el.getAttribute('data-end'), 10);
+        if (isNaN(begin) || isNaN(end) || pos < begin || pos > end) return;
+        const bb = block ? parseInt(block.getAttribute('data-begin'), 10) : 0;
+        const be = block ? parseInt(block.getAttribute('data-end'), 10) : 0;
+        if (!block || end - begin < be - bb) block = el;
+      });
+    }
+
     let bestMatch = null;
     let bestDistance = Infinity;
-    output.querySelectorAll('[data-begin]').forEach(function (el) {
+    (block || output).querySelectorAll('[data-begin]').forEach(function (el) {
       const line = lineOfId(el.id);
       if (line === null || line > lineNumber) return;
       if (lineNumber - line < bestDistance) {
@@ -285,6 +304,7 @@
         bestMatch = el;
       }
     });
+    bestMatch = bestMatch || block;
 
     if (bestMatch) {
       savedScrollState = { scrollTop: output.scrollTop, elementId: bestMatch.id };
