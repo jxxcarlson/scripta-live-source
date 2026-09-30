@@ -12,6 +12,7 @@ import Element.Font as Font
 import Element.Input as Input
 import Element.Keyed
 import Html exposing (Html)
+import Icons
 import Html.Attributes
 import Html.Events
 import Json.Decode
@@ -193,9 +194,7 @@ sidebar toMsg model =
         [ -- Top controls section (compact)
           Element.column
             [ width fill, spacing 2, paddingEach { bottom = 36, top = 0, left = 0, right = 0 } ]
-            [ nameElement toMsg model
-            , toggleTheme toMsg model
-            , crudButtons toMsg model
+            [ crudButtons toMsg model
             ]
 
         -- Export/Import section
@@ -285,7 +284,8 @@ tocPanel renderMsg model =
 crudButtons : (Common.CommonMsg -> msg) -> Common.CommonModel -> Element msg
 crudButtons toMsg model =
     Element.row [ spacing 4, width fill ]
-        [ newButton toMsg model
+        [ toggleTheme toMsg model
+        , newButton toMsg model
         , saveButton toMsg model
         ]
 
@@ -646,90 +646,17 @@ stringOfBool b =
 -- WIDGET WRAPPERS
 
 
-nameElement : (Common.CommonMsg -> msg) -> Common.CommonModel -> Element msg
-nameElement toMsg model =
-    let
-        currentValue =
-            Maybe.withDefault "" model.userName
-
-        showLabel =
-            String.trim currentValue == ""
-    in
-    -- Always show the same structure to prevent DOM changes
-    Element.column [ spacing 8 ]
-        [ Element.el
-            [ Font.size 14
-            , Font.color (Style.textColor model.theme)
-            , if showLabel then
-                Element.alpha 1
-
-              else
-                Element.alpha 0
-
-            -- Hide label but keep structure
-            ]
-            (text "Name your app:")
-        , inputTextWidget model.theme currentValue (toMsg << Common.InputUserName)
-        ]
-
-
-inputTextWidget : Theme.Theme -> String -> (String -> msg) -> Element msg
-inputTextWidget theme value onChange =
-    Input.text
-        [ width fill
-        , height (px 30)
-        , Font.size 14
-        , Border.width 1
-        , Border.color
-            (case theme of
-                Theme.Light ->
-                    Element.rgb 0.7 0.7 0.7
-
-                Theme.Dark ->
-                    Element.rgb 0.3 0.3 0.3
-            )
-        , Border.rounded 4
-        , Background.color
-            (case theme of
-                Theme.Light ->
-                    Element.rgb 1 1 1
-
-                Theme.Dark ->
-                    Element.rgb 0.1 0.1 0.1
-            )
-        , Font.color
-            (case theme of
-                Theme.Light ->
-                    Element.rgb 0 0 0
-
-                Theme.Dark ->
-                    Element.rgb 0.9 0.9 0.9
-            )
-        , padding 6
-        ]
-        { onChange = onChange
-        , text = value
-        , placeholder = Nothing
-        , label = Input.labelHidden "User name"
-        }
-
-
+{-| Single dark/light toggle: shows a sun in dark mode (click for light)
+and a moon in light mode (click for dark).
+-}
 toggleTheme : (Common.CommonMsg -> msg) -> Common.CommonModel -> Element msg
 toggleTheme toMsg model =
-    Element.row
-        [ height (px 30)
-        ]
-        [ if model.theme == Theme.Dark then
-            sidebarButton2 model.theme Theme.Dark (Just (toMsg Common.ToggleTheme)) "Dark"
+    case model.theme of
+        Theme.Dark ->
+            Widget.sidebarIconButton model.theme (Just (toMsg Common.ToggleTheme)) "Switch to light mode" Icons.sun
 
-          else
-            Widget.sidebarButton model.theme (Just (toMsg Common.ToggleTheme)) "Dark"
-        , if model.theme == Theme.Light then
-            sidebarButton2 model.theme Theme.Light (Just (toMsg Common.ToggleTheme)) "Light"
-
-          else
-            Widget.sidebarButton model.theme (Just (toMsg Common.ToggleTheme)) "Light"
-        ]
+        Theme.Light ->
+            Widget.sidebarIconButton model.theme (Just (toMsg Common.ToggleTheme)) "Switch to dark mode" Icons.moon
 
 
 toggleSortOrder : (Common.CommonMsg -> msg) -> Common.CommonModel -> Element msg
