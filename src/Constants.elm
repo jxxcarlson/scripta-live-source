@@ -12,6 +12,6 @@ type alias Constants =
 
 constants : Constants
 constants =
-    { maxUnsavedDuration = 5
-    , autoSaveCheckInterval = 1000
+    { maxUnsavedDuration = 6
+    , autoSaveCheckInterval = 3000
     }

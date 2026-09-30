@@ -282,22 +282,16 @@ updateCommon msg model =
             , Cmd.none
             )
 
-        Common.AutoSave time ->
-            let
-                shouldSave =
-                    Time.posixToMillis time - Time.posixToMillis common.lastSaved > 30000
-                        && common.sourceText /= ""
-                        && common.lastChanged /= common.lastSaved
-            in
-            if shouldSave then
-                update (CommonMsg Common.SaveDocument) model
-            else
-                ( model, Cmd.none )
-
         Common.Tick time ->
-            ( { model | common = { common | currentTime = time } }
-            , Cmd.none
-            )
+            let
+                newModel =
+                    { model | common = { common | currentTime = time } }
+            in
+            if Common.shouldAutoSave time newModel.common then
+                update (CommonMsg Common.SaveDocument) newModel
+
+            else
+                ( newModel, Cmd.none )
 
         Common.LoadUserNameDelayed ->
             ( model
@@ -649,7 +643,6 @@ subscriptions model =
     Sub.batch
         [ Browser.Events.onResize (\w h -> CommonMsg (Common.GotNewWindowDimensions w h))
         , Keyboard.subscriptions |> Sub.map (CommonMsg << Common.KeyMsg)
-        , Time.every (30 * 1000) (CommonMsg << Common.AutoSave)
         , Time.every constants.autoSaveCheckInterval (CommonMsg << Common.Tick)
         , Storage.Tauri.subscriptions StorageMsg
         ]

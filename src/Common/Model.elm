@@ -16,10 +16,12 @@ module Common.Model exposing
     , loadSource
     , makeOptions
     , refreshOptions
+    , shouldAutoSave
     , updateSource
     )
 
 import Browser.Dom
+import Constants exposing (constants)
 import Document exposing (Document)
 import Http
 import Json.Decode as Decode
@@ -115,7 +117,6 @@ type CommonMsg
     | ToggleDocumentList
     | ToggleSortOrder
     | InputDocumentSearchText String
-    | AutoSave Time.Posix
     | Tick Time.Posix
     | GeneratedId String
     | InitialDocumentId String String Time.Posix Theme.Theme String
@@ -332,6 +333,25 @@ compilerEventCmd event =
 
         Scripta.ClickedLink _ ->
             Cmd.none
+
+
+{-| Checked on every Tick (every `constants.autoSaveCheckInterval` ms): save
+when the current document has unsaved changes and there has been no edit for
+`constants.maxUnsavedDuration` seconds. Comparing content rather than
+timestamps means no edit is missed, whenever it happened relative to a save.
+-}
+shouldAutoSave : Time.Posix -> CommonModel -> Bool
+shouldAutoSave now model =
+    case model.currentDocument of
+        Just doc ->
+            model.sourceText
+                /= doc.content
+                && (Time.posixToMillis now - Time.posixToMillis model.lastChanged)
+                >= constants.maxUnsavedDuration
+                * 1000
+
+        Nothing ->
+            False
 
 
 getTitle : CommonModel -> String
