@@ -1,4 +1,4 @@
-module ScriptaExport exposing (imageUrls, latex, rawLatex)
+module ScriptaExport exposing (imageUrls, latex, rawLatex, sourceBlockAt)
 
 {-| Exports that need the parsed forest, which the public `Scripta` API keeps
 opaque. The source is re-parsed without the display filter, because the
@@ -65,6 +65,20 @@ imageUrls source =
     (fromExpressions ++ fromBlocks)
         |> List.sort
         |> List.Extra.unique
+
+
+{-| Editor location of the block that a `%%% Line n` marker in the exported
+LaTeX refers to (the PDF server reports errors with these numbers). The
+compiler numbers source lines from 0; the editor numbers them from 1.
+Returns the 1-based first line and the block's line count.
+-}
+sourceBlockAt : Int -> String -> { lineNumber : Int, numberOfLines : Int }
+sourceBlockAt markerLine source =
+    forest source
+        |> List.concatMap Library.Tree.flatten
+        |> List.Extra.find (\block -> block.meta.lineNumber == markerLine)
+        |> Maybe.map (\block -> { lineNumber = markerLine + 1, numberOfLines = max 1 block.meta.numberOfLines })
+        |> Maybe.withDefault { lineNumber = markerLine + 1, numberOfLines = 1 }
 
 
 forest : String -> List (Tree ExpressionBlock)

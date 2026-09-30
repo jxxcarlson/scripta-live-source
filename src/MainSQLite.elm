@@ -522,6 +522,27 @@ updateCommon msg model =
             , Cmd.none
             )
 
+        Common.ToggleMenu menu ->
+            ( { model
+                | common =
+                    { common
+                        | openMenu =
+                            if common.openMenu == Just menu then
+                                Nothing
+
+                            else
+                                Just menu
+                    }
+              }
+            , Cmd.none
+            )
+
+        Common.CloseMenu ->
+            ( { model | common = { common | openMenu = Nothing } }, Cmd.none )
+
+        Common.MenuItemSelected itemMsg ->
+            updateCommon itemMsg { model | common = { common | openMenu = Nothing } }
+
         Common.Tick time ->
             let
                 newModel =
@@ -709,10 +730,7 @@ updateCommon msg model =
             )
 
         Common.FocusOnEditorLine lineNumber ->
-            -- Scroll to and highlight the specified line in the editor
-            ( model
-            , Ports.selectInEditor { lineNumber = lineNumber, begin = 0, end = 0, numberOfLines = 1 }
-            )
+            ( model, Common.focusEditorOnLine lineNumber common )
 
         Common.TogglePdfErrors ->
             ( { model | common = { common | showPdfErrors = not common.showPdfErrors } }
@@ -898,6 +916,7 @@ subscriptions model =
         [ Browser.Events.onResize (\w h -> CommonMsg (Common.GotNewWindowDimensions w h))
         , Keyboard.subscriptions |> Sub.map (CommonMsg << Common.KeyMsg)
         , Time.every constants.autoSaveCheckInterval (CommonMsg << Common.Tick)
+        , Sub.map CommonMsg (Common.menuSubscriptions model.common)
         , Storage.SQLite.subscriptions StorageMsg
         ]
 

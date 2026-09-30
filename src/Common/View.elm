@@ -302,128 +302,177 @@ saveButton toMsg model =
 
 exportStuff : (Common.CommonMsg -> msg) -> Common.CommonModel -> Element msg
 exportStuff toMsg model =
-    Element.column [ spacing 2, width fill ]
-        [ Element.el [ Font.semiBold ] (Element.text "Export/Import")
+    Element.column [ spacing 6, width fill ]
+        [ Element.row [ spacing 4 ]
+            [ dropdownMenu toMsg
+                model
+                Common.ExportMenu
+                "Export"
+                [ ( "PDF", Common.PrintToPDF )
+                , ( "LaTeX", Common.ExportToLaTeX )
+                , ( "Raw LaTeX", Common.ExportToRawLaTeX )
+                , ( "Scripta", Common.ExportScriptaFile )
+                ]
+            , dropdownMenu toMsg
+                model
+                Common.ImportMenu
+                "Import"
+                [ ( "Scripta", Common.ImportScriptaFile )
+                , ( "LaTeX", Common.ImportLaTeXFile )
+                , ( "Markdown", Common.ImportMarkdownFile )
+                ]
+            ]
         , case model.printingState of
             Common.PrintWaiting ->
-                Element.column [ spacing 2, width fill ]
-                    [ Element.row [ spacing 2, width fill ]
-                        [ Widget.sidebarButton model.theme (Just (toMsg Common.PrintToPDF)) "PDF"
-                        , Widget.sidebarButton model.theme (Just (toMsg Common.ExportToLaTeX)) "LaTeX"
-                        , Widget.sidebarButton model.theme (Just (toMsg Common.ExportToRawLaTeX)) "Raw LaTeX"
-                        ]
-                    , Element.column [ spacing 2, width fill ]
-                        [ Element.row [ spacing 2, width fill ]
-                            [ Widget.sidebarButton model.theme (Just (toMsg Common.ExportScriptaFile)) "Save Scripta"
-                            , Widget.sidebarButton model.theme (Just (toMsg Common.ImportScriptaFile)) "Import Scripta"
-                            ]
-                        , Element.row [ spacing 2, width fill ]
-                            [ Widget.sidebarButton model.theme (Just (toMsg Common.ImportLaTeXFile)) "Import LaTeX"
-                            , Widget.sidebarButton model.theme (Just (toMsg Common.ImportMarkdownFile)) "Import markdown"
-                            ]
-                        ]
-                    ]
+                Element.none
 
             Common.PrintProcessing ->
-                Element.el [ Font.size 14, padding 8 ] (Element.text "Processing...")
+                Element.el [ Font.size 14 ] (Element.text "Processing...")
 
             Common.PrintReady ->
-                Element.column [ spacing 2, width fill ]
-                    [ -- Always show the Save/Import buttons
-                      Element.column [ spacing 2, width fill ]
-                        [ Element.row [ spacing 2, width fill ]
-                            [ Widget.sidebarButton model.theme (Just (toMsg Common.ExportScriptaFile)) "Save Scripta"
-                            , Widget.sidebarButton model.theme (Just (toMsg Common.ImportScriptaFile)) "Import Scripta"
-                            ]
-                        , Element.row [ spacing 2, width fill ]
-                            [ Widget.sidebarButton model.theme (Just (toMsg Common.ImportLaTeXFile)) "Import LaTeX"
-                            , Widget.sidebarButton model.theme (Just (toMsg Common.ImportMarkdownFile)) "Import markdown"
-                            ]
-                        ]
-                    , -- Display links based on PDF response
-                      case model.pdfResponse of
-                        Nothing ->
-                            -- Fallback to old behavior if no response
-                            Element.newTabLink
-                                [ Font.size 14
-                                , Font.color
-                                    (if model.theme == Theme.Light then
-                                        Element.rgb 0 0 0.8
-
-                                     else
-                                        Element.rgb 0.4 0.6 1.0
-                                     -- Light blue for dark mode
-                                    )
-                                ]
-                                { url = Config.pdfServUrl ++ extractFileName model.pdfLink
-                                , label = Element.text "Click for PDF"
-                                }
-
-                        Just response ->
-                            Element.column [ spacing 4, width fill ]
-                                [ -- Show PDF link if available
-                                  case response.pdf of
-                                    Just pdfFile ->
-                                        Element.newTabLink
-                                            [ Font.size 14
-                                            , Font.color
-                                                (if model.theme == Theme.Light then
-                                                    Element.rgb 0 0 0.8
-
-                                                 else
-                                                    Element.rgb 0.4 0.6 1.0
-                                                 -- Light blue for dark mode
-                                                )
-                                            ]
-                                            { url = Config.pdfServUrl ++ pdfFile
-                                            , label =
-                                                if response.hasErrors then
-                                                    Element.text "PDF (with errors)"
-
-                                                else
-                                                    Element.text "Click for PDF"
-                                            }
-
-                                    Nothing ->
-                                        Element.none
-                                , -- Show error report link if available
-                                  case response.errorReport of
-                                    Just errorFile ->
-                                        Element.column [ spacing 2, width fill ]
-                                            [ Element.newTabLink
-                                                [ Font.size 14
-                                                , Font.color (Element.rgb 0.8 0 0)
-                                                ]
-                                                { url = Config.pdfServUrl ++ errorFile
-                                                , label =
-                                                    if response.pdfFailed then
-                                                        Element.text "Error Log (PDF generation failed)"
-
-                                                    else
-                                                        Element.text "Error Log"
-                                                }
-                                            , if not (List.isEmpty model.pdfErrors) then
-                                                Widget.sidebarButton model.theme
-                                                    (Just (toMsg Common.TogglePdfErrors))
-                                                    (if model.showPdfErrors then
-                                                        "Hide Errors (" ++ String.fromInt (List.length model.pdfErrors) ++ ")"
-                                                     else
-                                                        "Show Errors (" ++ String.fromInt (List.length model.pdfErrors) ++ ")"
-                                                    )
-                                              else
-                                                Element.none
-                                            ]
-
-                                    Nothing ->
-                                        Element.none
-                                ]
-                    , Element.row [ spacing 4, width fill ]
-                        [ Widget.sidebarButton model.theme (Just (toMsg Common.PrintToPDF)) "PDF"
-                        , Widget.sidebarButton model.theme (Just (toMsg Common.ExportToLaTeX)) "LaTeX"
-                        , Widget.sidebarButton model.theme (Just (toMsg Common.ExportToRawLaTeX)) "Raw LaTeX"
-                        ]
-                    ]
+                pdfResult toMsg model
         ]
+
+
+{-| A sidebar button that opens a dropdown of items. The container carries
+the menu id so that clicks inside it do not close the menu.
+-}
+dropdownMenu : (Common.CommonMsg -> msg) -> Common.CommonModel -> Common.Menu -> String -> List ( String, Common.CommonMsg ) -> Element msg
+dropdownMenu toMsg model menu title items =
+    let
+        isOpen =
+            model.openMenu == Just menu
+    in
+    Element.el
+        (Element.htmlAttribute (Html.Attributes.id (Common.menuId menu))
+            :: (if isOpen then
+                    [ Element.below (menuPanel toMsg model items) ]
+
+                else
+                    []
+               )
+        )
+        (Widget.sidebarButton model.theme (Just (toMsg (Common.ToggleMenu menu))) (title ++ " ▾"))
+
+
+menuPanel : (Common.CommonMsg -> msg) -> Common.CommonModel -> List ( String, Common.CommonMsg ) -> Element msg
+menuPanel toMsg model items =
+    Element.column
+        [ Element.moveDown 2
+        , Element.width (px 130)
+        , paddingXY 0 4
+        , Background.color (Style.backgroundColor model.theme)
+        , Font.color (Style.textColor model.theme)
+        , Border.width 1
+        , Border.rounded 4
+        , Border.color (Style.borderColor model.theme)
+        , Border.shadow { offset = ( 0, 2 ), size = 0, blur = 8, color = Element.rgba 0 0 0 0.2 }
+        , Element.htmlAttribute (Html.Attributes.style "z-index" "100")
+        ]
+        (List.map (menuItem toMsg model) items)
+
+
+menuItem : (Common.CommonMsg -> msg) -> Common.CommonModel -> ( String, Common.CommonMsg ) -> Element msg
+menuItem toMsg model ( label, itemMsg ) =
+    Input.button
+        [ width fill
+        , paddingXY 12 6
+        , Font.size 13
+        , mouseOver
+            [ Background.color
+                (if model.theme == Theme.Light then
+                    Element.rgb255 235 235 235
+
+                 else
+                    Element.rgb255 65 72 78
+                )
+            ]
+        ]
+        { onPress = Just (toMsg (Common.MenuItemSelected itemMsg))
+        , label = Element.text label
+        }
+
+
+{-| Links shown after a PDF request: the PDF, and the error log if any.
+-}
+pdfResult : (Common.CommonMsg -> msg) -> Common.CommonModel -> Element msg
+pdfResult toMsg model =
+    case model.pdfResponse of
+        Nothing ->
+            -- Fallback to old behavior if no response
+            Element.newTabLink
+                [ Font.size 14
+                , Font.color
+                    (if model.theme == Theme.Light then
+                        Element.rgb 0 0 0.8
+
+                     else
+                        Element.rgb 0.4 0.6 1.0
+                     -- Light blue for dark mode
+                    )
+                ]
+                { url = Config.pdfServUrl ++ extractFileName model.pdfLink
+                , label = Element.text "Click for PDF"
+                }
+
+        Just response ->
+            Element.column [ spacing 4, width fill ]
+                [ -- Show PDF link if available
+                  case response.pdf of
+                    Just pdfFile ->
+                        Element.newTabLink
+                            [ Font.size 14
+                            , Font.color
+                                (if model.theme == Theme.Light then
+                                    Element.rgb 0 0 0.8
+
+                                 else
+                                    Element.rgb 0.4 0.6 1.0
+                                 -- Light blue for dark mode
+                                )
+                            ]
+                            { url = Config.pdfServUrl ++ pdfFile
+                            , label =
+                                if response.hasErrors then
+                                    Element.text "PDF (with errors)"
+
+                                else
+                                    Element.text "Click for PDF"
+                            }
+
+                    Nothing ->
+                        Element.none
+                , -- Show error report link if available
+                  case response.errorReport of
+                    Just errorFile ->
+                        Element.column [ spacing 2, width fill ]
+                            [ Element.newTabLink
+                                [ Font.size 14
+                                , Font.color (Element.rgb 0.8 0 0)
+                                ]
+                                { url = Config.pdfServUrl ++ errorFile
+                                , label =
+                                    if response.pdfFailed then
+                                        Element.text "Error Log (PDF generation failed)"
+
+                                    else
+                                        Element.text "Error Log"
+                                }
+                            , if not (List.isEmpty model.pdfErrors) then
+                                Widget.sidebarButton model.theme
+                                    (Just (toMsg Common.TogglePdfErrors))
+                                    (if model.showPdfErrors then
+                                        "Hide Errors (" ++ String.fromInt (List.length model.pdfErrors) ++ ")"
+                                     else
+                                        "Show Errors (" ++ String.fromInt (List.length model.pdfErrors) ++ ")"
+                                    )
+                              else
+                                Element.none
+                            ]
+
+                    Nothing ->
+                        Element.none
+                ]
 
 
 extractFileName : String -> String
@@ -792,7 +841,8 @@ errorButton toMsg theme pdfError =
             ]
         ]
         { onPress = Just (toMsg (Common.FocusOnEditorLine pdfError.scriptaLine))
-        , label = Element.text ("Line " ++ String.fromInt pdfError.scriptaLine)
+        , -- scriptaLine is 0-based; show the editor's (1-based) line number
+          label = Element.text ("Line " ++ String.fromInt (pdfError.scriptaLine + 1))
         }
 
 

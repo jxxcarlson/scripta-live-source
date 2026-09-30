@@ -3,6 +3,7 @@ module Common.Model exposing
     , CommonMsg(..)
     , DisplaySettings
     , Flags
+    , Menu(..)
     , PdfError
     , PdfResponse
     , PrintingState(..)
@@ -12,15 +13,19 @@ module Common.Model exposing
     , applyEdit
     , compilerEventCmd
     , contentWidth
+    , focusEditorOnLine
     , initCommon
     , loadSource
     , makeOptions
+    , menuId
+    , menuSubscriptions
     , refreshOptions
     , shouldAutoSave
     , updateSource
     )
 
 import Browser.Dom
+import Browser.Events
 import Constants exposing (constants)
 import Document exposing (Document)
 import Http
@@ -29,6 +34,7 @@ import Keyboard
 import List.Extra
 import Ports
 import Scripta
+import ScriptaExport
 import Theme
 import Time
 
@@ -37,6 +43,13 @@ type PrintingState
     = PrintWaiting
     | PrintProcessing
     | PrintReady
+
+
+{-| Sidebar dropdown menus. At most one is open at a time.
+-}
+type Menu
+    = ExportMenu
+    | ImportMenu
 
 
 type SortOrder
@@ -99,6 +112,7 @@ type alias CommonModel =
     , initialText : String
     , loadDocumentIntoEditor : Bool
     , lastSavedDocumentId : Maybe String
+    , openMenu : Maybe Menu
     }
 
 
@@ -148,6 +162,9 @@ type CommonMsg
     | GotViewPort (Result Browser.Dom.Error Browser.Dom.Viewport)
     | FocusOnEditorLine Int
     | TogglePdfErrors
+    | ToggleMenu Menu
+    | CloseMenu
+    | MenuItemSelected CommonMsg
 
 
 type alias Flags =
@@ -209,6 +226,7 @@ initCommon flags =
     , initialText = ""
     , loadDocumentIntoEditor = False
     , lastSavedDocumentId = Nothing
+    , openMenu = Nothing
     }
 
 
@@ -352,6 +370,89 @@ shouldAutoSave now model =
 
         Nothing ->
             False
+
+
+{-| DOM id of a menu's container (its button and dropdown).
+-}
+menuId : Menu -> String
+menuId menu =
+    case menu of
+        ExportMenu ->
+            "menu-export"
+
+        ImportMenu ->
+            "menu-import"
+
+
+{-| While a menu is open, close it on a mouse press outside any menu or on Escape.
+-}
+menuSubscriptions : CommonModel -> Sub CommonMsg
+menuSubscriptions model =
+    case model.openMenu of
+        Nothing ->
+            Sub.none
+
+        Just _ ->
+            Sub.batch
+                [ Browser.Events.onMouseDown
+                    (Decode.field "target" insideMenu
+                        |> Decode.andThen
+                            (\inside ->
+                                if inside then
+                                    Decode.fail "inside a menu"
+
+                                else
+                                    Decode.succeed CloseMenu
+                            )
+                    )
+                , Browser.Events.onKeyDown
+                    (Decode.field "key" Decode.string
+                        |> Decode.andThen
+                            (\key ->
+                                if key == "Escape" then
+                                    Decode.succeed CloseMenu
+
+                                else
+                                    Decode.fail "not Escape"
+                            )
+                    )
+                ]
+
+
+{-| Whether a DOM node is inside a menu container (walks up parentNode).
+-}
+insideMenu : Decode.Decoder Bool
+insideMenu =
+    Decode.oneOf
+        [ Decode.field "id" Decode.string
+            |> Decode.andThen
+                (\id ->
+                    if String.startsWith "menu-" id then
+                        Decode.succeed True
+
+                    else
+                        Decode.field "parentNode" (Decode.lazy (\_ -> insideMenu))
+                )
+        , Decode.succeed False
+        ]
+
+
+{-| Highlight, in the editor, the block a PDF error points to. `markerLine`
+is the line number from the exported LaTeX (0-based, see
+ScriptaExport.sourceBlockAt).
+-}
+focusEditorOnLine : Int -> CommonModel -> Cmd msg
+focusEditorOnLine markerLine model =
+    let
+        block =
+            ScriptaExport.sourceBlockAt markerLine model.sourceText
+    in
+    Ports.selectInEditor
+        { lineNumber = block.lineNumber
+        , begin = 0
+        , end = 0
+        , numberOfLines = block.numberOfLines
+        }
 
 
 getTitle : CommonModel -> String
