@@ -31,6 +31,12 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         return translated_path
 
+    def end_headers(self):
+        # Development server: always revalidate, so rebuilt assets are
+        # picked up on a normal reload instead of served from cache.
+        self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8012
 
